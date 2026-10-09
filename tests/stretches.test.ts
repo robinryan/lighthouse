@@ -51,3 +51,17 @@ test('every exercise has an embeddable demo video id', async () => {
     assert.match(EXERCISE_VIDEOS[e.id]?.videoId ?? '', /^[A-Za-z0-9_-]{11}$/, e.id);
   }
 });
+
+test('coach request adapts to the model (Haiku: basic web search, no fallbacks)', async () => {
+  const { requestOptionsFor } = await import('../supabase/functions/_shared/coach.ts');
+  const opus = requestOptionsFor('claude-opus-5-5');
+  assert.equal((opus.tools[0] as { type: string }).type, 'web_search_20260209');
+  assert.deepEqual(opus.fallback, { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' });
+  const sonnet = requestOptionsFor('claude-sonnet-5-5');
+  assert.equal((sonnet.tools[0] as { type: string }).type, 'web_search_20260209');
+  const haiku = requestOptionsFor('claude-haiku-5-5');
+  assert.equal((haiku.tools[0] as { type: string; max_uses: number }).type, 'web_search_20250305');
+  assert.equal((haiku.tools[0] as { max_uses: number }).max_uses, 2);
+  assert.deepEqual(haiku.fallback, {});
+  assert.equal(haiku.tools.length, opus.tools.length);
+});

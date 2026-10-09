@@ -65,8 +65,10 @@ ${catalogFor(equipment)}`;
 // Exercise ids are plain strings (validated server-side) — listing all ids as enums would triple the prompt size.
 const exerciseId = { type: 'string', description: 'Catalog exercise id.' } as const;
 
+const WEB_SEARCH = { type: 'web_search_20260209', name: 'web_search', max_uses: 2, allowed_domains: SEARCH_DOMAINS };
+
 export const TOOLS = [
-  { type: 'web_search_20260209', name: 'web_search', max_uses: 2, allowed_domains: SEARCH_DOMAINS },
+  WEB_SEARCH,
   {
     name: 'propose_swap',
     description: 'Propose replacing an exercise in the current workout with another catalog exercise. The user sees an Apply button.',
@@ -164,6 +166,19 @@ export const TOOLS = [
     },
   },
 ];
+
+/**
+ * Model-specific request options. Haiku models don't support the newer web-search tool
+ * (dynamic filtering) or server-side refusal fallbacks, so they get the basic search tool
+ * and no fallback. Opus and Sonnet fall back to another model if a safety classifier declines.
+ */
+export function requestOptionsFor(model: string) {
+  const haiku = model.startsWith('claude-haiku');
+  return {
+    tools: haiku ? [{ ...WEB_SEARCH, type: 'web_search_20250305' }, ...TOOLS.slice(1)] : TOOLS,
+    fallback: haiku ? {} : { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' },
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Context
@@ -373,6 +388,7 @@ export async function runCoach(opts: {
   const effort = chooseEffort(text, !!opts.research);
   const profile = await loadProfile(db);
   const system = buildSystem(profile.equipment);
+  const modelOpts = requestOptionsFor(model);
 
   // In-workout chats act on that workout; the general chat can act on whatever workout is in progress.
   let targetId = workoutId;
@@ -413,11 +429,10 @@ export async function runCoach(opts: {
       // breakpoint at the end of the conversation, so tool-call rounds and follow-ups reuse it.
       system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
       cache_control: { type: 'ephemeral' },
-      tools: TOOLS,
+      tools: modelOpts.tools,
       messages,
       output_config: { effort },
-      betas: ['server-side-fallback-2026-07-01'],
-      fallbacks: 'default',
+      ...modelOpts.fallback,
     }).finalMessage();
     addUsage(usage, msg.usage);
 
