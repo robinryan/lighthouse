@@ -1,0 +1,15 @@
+{
+  "name": "lighthouse",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Lighthouse — a strength-training PWA with an AI coach",
+  "workspaces": ["server", "client"],
+  "scripts": {
+    "dev": "npm run dev -w server & npm run dev -w client",
+    "build": "npm run build -w client && npm run build -w server",
+    "start": "npm run start -w server",
+    "test": "npm test -w server",
+    "typecheck": "npm run typecheck -w server && npm run typecheck -w client"
+  },
+  "engines": { "node": ">=20" }
+}
