@@ -1,0 +1,75 @@
+import type { CoachAction, MessageRow } from '../../supabase/functions/_shared/coach.ts';
+import { must } from '../../supabase/functions/_shared/queries.ts';
+import { db } from './client';
+import {
+  addExerciseToWorkout, adjustLoad, getProfile, saveProfile, setSlotExercise, swapExercise,
+} from './training';
+import type { CoachMessage } from './types';
+
+function toMessage(r: MessageRow): CoachMessage {
+  return { id: r.id, role: r.role, content: r.content, createdAt: r.created_at, actions: r.actions ?? [], sources: r.sources ?? [] };
+}
+
+export async function listMessages(workoutId: number | null): Promise<CoachMessage[]> {
+  let q = db().from('coach_messages').select('*').order('id');
+  q = workoutId == null ? q.is('workout_id', null) : q.eq('workout_id', workoutId);
+  return (must(await q) as MessageRow[]).map(toMessage);
+}
+
+/** Thrown when the coach edge function isn't deployed or has no API key yet. */
+export class CoachNotConfiguredError extends Error {}
+
+export async function askCoach(workoutId: number | null, text: string): Promise<CoachMessage> {
+  const { data, error } = await db().functions.invoke('coach', { body: { workoutId, text } });
+  if (error) {
+    // supabase-js wraps non-2xx responses; pull out the function's own message when there is one.
+    const ctx = (error as { context?: Response }).context;
+    let message = error.message as string;
+    let code: string | undefined;
+    if (ctx && typeof ctx.json === 'function') {
+      try {
+        const body = await ctx.json();
+        message = body.error ?? message;
+        code = body.code;
+      } catch { /* not JSON */ }
+    }
+    if (code === 'not_configured' || (ctx && ctx.status === 404)) {
+      throw new CoachNotConfiguredError(
+        ctx?.status === 404
+          ? 'The coach function isn\'t deployed to Supabase yet.'
+          : 'The AI coach needs an ANTHROPIC_API_KEY secret in Supabase.',
+      );
+    }
+    throw new Error(message);
+  }
+  return toMessage(data as MessageRow);
+}
+
+export async function applyAction(messageId: number, index: number, dismiss: boolean): Promise<CoachAction> {
+  const row = must(await db().from('coach_messages').select('actions').eq('id', messageId).maybeSingle()) as { actions: CoachAction[] } | null;
+  if (!row) throw new Error('Message not found');
+  const actions = row.actions;
+  const a = actions[index];
+  if (!a) throw new Error('Action not found');
+  if (a.status !== 'pending') throw new Error(`Already ${a.status}`);
+  if (!dismiss) {
+    switch (a.type) {
+      case 'swap': await swapExercise(a.workoutExerciseId, a.exerciseId, a.scope); break;
+      case 'load': await adjustLoad(a.workoutExerciseId, a.percent); break;
+      case 'add': await addExerciseToWorkout(a.workoutId, a.exerciseId, { sets: a.sets, reps: a.reps, restSeconds: a.restSeconds, note: a.note }); break;
+      case 'program': await setSlotExercise(a.slotId, a.exerciseId); break;
+      case 'limitations': {
+        const p = await getProfile();
+        const set = new Set(p.limitations);
+        a.add.forEach((j) => set.add(j));
+        a.remove.forEach((j) => set.delete(j));
+        const notes = a.note ? [p.limitationNotes, a.note].filter(Boolean).join('\n') : p.limitationNotes;
+        await saveProfile({ ...p, limitations: [...set], limitationNotes: notes });
+        break;
+      }
+    }
+  }
+  a.status = dismiss ? 'dismissed' : 'applied';
+  must(await db().from('coach_messages').update({ actions }).eq('id', messageId));
+  return a;
+}

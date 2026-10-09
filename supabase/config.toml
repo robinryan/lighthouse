@@ -1,0 +1,3 @@
+[functions.coach]
+# The function checks the user's session itself (and answers CORS preflights), so keep JWT verification on.
+verify_jwt = true

@@ -2,7 +2,22 @@
 
 Lighthouse plans each day's lifting session, logs what you actually do, progresses the weights for you, and has a Claude-powered coach you can ask mid-workout ("my elbow hurts today — what should I do instead?").
 
-It's an installable Progressive Web App (works offline at the gym) with email/password accounts, so each user gets their own history and recommendations.
+It's an installable Progressive Web App (works offline at the gym) built with React + Vite, using **Supabase** for accounts, the database and the coach's server function. It deploys as a static site (Netlify, which is what Bolt publishes to).
+
+## Setting it up in Bolt
+
+1. **Import** the repo into bolt.new. The app code must be on the default branch (`master`).
+2. **Connect Supabase.** Click **Supabase** in Bolt's top bar and connect or create a project. Bolt fills in `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` and applies the database migration in `supabase/migrations/`. If Bolt doesn't apply it, open the Supabase dashboard → **SQL Editor**, paste in the migration file and run it.
+3. **Publish.** The build is `npm run build` and the output is `dist/`; `netlify.toml` already says so. At this point everything works except the coach.
+4. **Turn on the AI coach** (optional):
+   - **Deploy the edge function.** Ask Bolt to "deploy the `coach` Supabase edge function in `supabase/functions/coach`". Or, with the Supabase CLI: `supabase functions deploy coach`.
+   - **Add your Anthropic key as a secret.** In the Supabase dashboard, go to **Edge Functions → Secrets** and add `ANTHROPIC_API_KEY`. You can also add `COACH_MODEL` to override the default model, `claude-opus-5-5`.
+5. **Supabase auth settings** (Authentication in the Supabase dashboard):
+   - **URL Configuration:** set **Site URL** to your published URL, so confirmation and password-reset emails link back to the app.
+   - **Email confirmation:** on by default, so new accounts must click the emailed link before signing in.
+   - **Closing sign-ups:** while the app is just for you, create your account, then turn off **Allow new users to sign up**.
+
+To install the app on your phone, open the published site and choose **Share → Add to Home Screen** (iOS) or **Install app** (Android).
 
 ## Features
 
@@ -12,93 +27,57 @@ It's an installable Progressive Web App (works offline at the gym) with email/pa
   - A2: OHP + Deadlift
   - B1: Bench + Squat
   - B2: Deadlift + OHP
-- **Automatic progression.** Weight goes up every time you hit your reps; the increment depends on the lift and your experience. A big AMRAP set earns a double jump for beginners. A missed session moves the lift to the next rep stage at the same weight (5×3 → 6×2 → 10×1) before the weight ever drops. Failing the last stage resets the lift from your estimated max.
-- **Accessories use double progression.** Add reps within the range (e.g. 10–15), then add weight. Three sessions below the range trigger a 10% deload.
-- **Easing back in.** If you haven't done a lift in over two weeks, it starts 10% lighter.
-- **Personalised from your profile.** Goal (strength, hypertrophy or general) sets the rep schemes. Session length sets how many accessories you get. Your equipment and the joints you want to protect decide which exercises are picked; for example, a dumbbells-only setup gets dumbbell variants, and protected elbows get a neutral-grip press.
-- **Lighter by choice isn't a failure.** Lifting below the prescription (say, on a sore day) doesn't count as a failed session.
+- **Automatic progression.** Weight goes up every time you hit your reps. A missed session moves the lift to the next rep stage at the same weight (5×3 → 6×2 → 10×1) before the weight ever drops. Accessories use double progression: add reps within a range, then add weight. After more than two weeks off, a lift starts 10% lighter.
+- **Personalised from your profile.** Goal, session length, equipment and the joints you want to protect decide which exercises are picked and how many accessories you get.
 
-**Logging** (modelled on Strong and Hevy, the most popular trackers)
-- Set rows show set number, **last time's numbers** (tap to copy), weight, reps and a checkmark.
-- Warm-up sets are calculated automatically for the heavy lift. The last set is marked AMRAP, with optional RPE.
-- A **rest timer** starts when you check off a set. Each tier has its own rest time (3:00 heavy, 2:00 volume, 1:15 accessories). It has ±15 s and skip buttons, and sounds, vibrates or notifies when rest is over. Because it's based on timestamps, it survives locking your phone.
-- **Plate calculator** for kg and lb.
-- Swap an exercise for today or for good; the picker can filter for "easy on elbows/shoulders/…" and your equipment. You can also add or remove exercises and sets, and keep notes per exercise and per workout.
-- Personal records are flagged live as you log. A summary when you finish shows what changes next time.
+**Logging** (modelled on Strong and Hevy)
+- Set rows show set number, last time's numbers (tap to copy), weight, reps and a checkmark.
+- Warm-ups are calculated for the heavy lift. The last set is marked AMRAP, with optional RPE.
+- A rest timer starts when you check off a set. It has ±15 s and skip buttons, and sounds, vibrates or notifies when rest is over.
+- Plate calculator, swaps (today only or for good), live personal records, and a summary when you finish showing what changes next time.
+- Sets logged without signal are queued and synced when you're back online.
 
 **Progress**
-- Estimated 1RM per lift (Epley formula), with charts of e1RM, top set and volume, a rep-record table and session history.
-- Weekly **hard sets per muscle** against the 10–20 sets/week evidence band.
+- Estimated 1RM charts, rep records and session history for each lift.
+- Weekly hard sets per muscle against the 10–20 sets/week evidence band.
 - Training calendar, week streak, bodyweight log and CSV export.
 
 **AI coach (Claude)**
-- Available inside every workout and as its own tab. It sees your profile, program, today's workout and recent sessions.
-- Uses **web search** for research questions and cites sources.
-- Proposes changes as one-tap **Apply** buttons: swap an exercise (today or in the program), lighten the remaining sets, add stretches or rehab drills, change a program slot, or record a joint to protect. Nothing changes until you tap Apply.
-- Safety guidance is built into the prompt: stop and see a professional for sharp pain, swelling or numbness. It is not medical advice.
+- Lives in every workout and has its own tab. It sees your profile, program, today's workout and recent sessions, and can search the web, citing its sources.
+- Proposes changes as one-tap **Apply** buttons: swap an exercise, lighten the remaining sets, add stretches or rehab drills, change a program slot, or record a joint to protect. Nothing changes until you tap Apply.
+- It isn't medical advice. It tells you to stop and see a professional for sharp pain, swelling or numbness.
+- Runs Claude Opus 5.5 at medium effort, with server-side refusal fallbacks enabled and web search capped at 5 searches per message.
 
-## Running locally
-
-Requires Node 20+.
+## Development
 
 ```bash
 npm install
-cp .env.example .env          # add ANTHROPIC_API_KEY to enable the coach (optional)
-npm run dev                   # API on :3001, app on http://localhost:5173
+cp .env.example .env    # fill in your Supabase URL and anon key
+npm run dev             # http://localhost:5173
 ```
 
-`npm run dev` doesn't load `.env` automatically. Export the variables in your shell first, for example `export ANTHROPIC_API_KEY=...`, or use a tool like `dotenv`.
-
-Production build:
+Tests:
+- **Programming engine:** unit tests that always run.
+- **Data layer and coach core:** integration tests that run against real Postgres with the migration applied, so row level security is exercised. They need a Postgres superuser URL:
 
 ```bash
-npm run build
-ANTHROPIC_API_KEY=... npm start   # serves the app and API on :3001
+TEST_DATABASE_URL=postgres://postgres@localhost:5432/postgres npm test
 ```
-
-Tests (programming engine, full API flow, and the coach tool loop against a fake Claude server):
-
-```bash
-npm test
-```
-
-## Deploying
-
-A PWA needs HTTPS to be installable and to work offline. The included `Dockerfile` runs anywhere that runs containers, such as Fly.io, Railway, Render or a VPS. Mount a persistent volume at `/data`; that's where the SQLite database lives.
-
-```bash
-docker build -t lighthouse .
-docker run -p 3001:3001 -v lighthouse-data:/data -e ANTHROPIC_API_KEY=... -e ALLOW_SIGNUP=false lighthouse
-```
-
-While it's just for you, set `ALLOW_SIGNUP=false`. Only the first account can then be created. Later, either open sign-ups or set `SIGNUP_INVITE_CODE`.
-
-On your phone, open the site, then choose **Share → Add to Home Screen** (iOS) or **Install app** (Android).
-
-## Configuration
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `ANTHROPIC_API_KEY` | — | Enables the AI coach |
-| `COACH_MODEL` | `claude-opus-5-5` | Model the coach uses |
-| `DATABASE_PATH` | `./data/lighthouse.db` | SQLite file location |
-| `PORT` | `3001` | HTTP port |
-| `ALLOW_SIGNUP` | `true` | `false` allows only the first account |
-| `SIGNUP_INVITE_CODE` | — | Require this code to register |
-
-The coach runs Claude Opus 5.5 at medium effort, with server-side refusal fallbacks enabled (`fallbacks: "default"`). Web search is capped at 5 searches per message. A typical question costs a few cents. Questions that trigger web research cost more.
 
 ## Layout
 
 ```
-server/  Express + SQLite API
-  src/engine.ts      programming & progression rules (pure functions, unit tested)
-  src/exercises.ts   exercise catalog (muscles, equipment, joint stress, cues)
-  src/training.ts    workouts, lift state, onboarding
-  src/coach.ts       Claude integration: context, tools, proposals
-  src/stats.ts       e1RM, PRs, weekly volume, CSV export
-client/  React + Vite PWA
-  src/pages/Workout.tsx         logging screen
-  src/components/RestTimer.tsx  rest timer
-  src/components/CoachChat.tsx  coach UI
+src/                          React app
+  data/training.ts            workouts, progression, program (via Supabase)
+  data/stats.ts               e1RM, PRs, weekly volume, CSV export
+  data/coach.ts               coach messages and applying proposals
+  pages/Workout.tsx           logging screen
+supabase/
+  migrations/                 tables, row level security, views
+  functions/coach/index.ts    edge function: Claude + web search + proposal tools
+  functions/_shared/          code shared by the app and the edge function
+    engine.ts                 programming & progression rules (pure, unit tested)
+    exercises.ts              exercise catalog (muscles, equipment, joint stress, cues)
+    coach.ts                  coach prompt, tools, context, validation
+tests/                        engine unit tests + Postgres integration tests
 ```
