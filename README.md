@@ -36,7 +36,7 @@ If you ever want direct control over the database (SQL editor, backups, monitori
 - Warm-ups are calculated for the heavy lift. The last set is marked AMRAP, with optional RPE.
 - A rest timer starts when you check off a set. It has ±15 s and skip buttons, and sounds, vibrates or notifies when rest is over.
 - Plate calculator, swaps (today only or for good), live personal records, and a summary when you finish showing what changes next time.
-- Every exercise name links to a YouTube form demo, with three form and safety tips underneath. You can hide the tips in Settings.
+- Tapping any exercise name opens an **in-app demo**: an embedded video plus form tips and, for stretches, how long. Videos load only when you tap Play, to save data. If a video can't be embedded, the app offers a YouTube search instead. Three form and safety tips also sit under each lift; you can hide them in Settings.
 - **Skip an exercise or single sets**, saying why: pain (and where), equipment busy, tired, short on time, too hard or easy, dislike, or other. The app then offers replacements ranked for that reason. For example, elbow pain on bench suggests presses that don't load the elbow. Skipped sets never count as a failed session.
 - **Add exercise** opens with a ranked "Suggested for you" list, ordered by what helps most. It uses muscles under-trained this week from your recent lifts, today's workout, your health profile and coach feedback, and shows the reason for each.
 - Sets logged without signal are queued and synced when you're back online.
@@ -60,6 +60,19 @@ If you ever want direct control over the database (SQL editor, backups, monitori
   - your own entries
 - Tracks sensitive joints (with severity), exercises to avoid, ones that work well, ones you dislike, and general notes.
 - Feeds suggestions, the coach's advice and program rebuilds. Review and edit it under Settings → Health profile.
+
+**Built for a phone at the gym**
+- **During a workout:**
+  - The screen stays on.
+  - The header, with elapsed time, set count, Coach and Finish, stays pinned while you scroll.
+  - Finished exercises collapse to one line, and the page scrolls to the next one.
+- **Logging sets:**
+  - Checkmarks are large and give a short haptic tick.
+  - Tapping a weight or reps box selects its number, so typing replaces it.
+  - The number keypad opens automatically, and inputs are sized so iOS doesn't zoom in.
+- **Rest timer:** the countdown also shows in the tab title, so it's visible in the app switcher.
+- **Stretch flags** collapse to a one-line summary.
+- **Loading:** pages load on demand, the app works offline, and there's an "Install app" prompt (Android) or instructions (iOS).
 
 **Progress**
 - Estimated 1RM charts, rep records and session history for each lift.

@@ -3,12 +3,13 @@ import { videoUrl, type Exercise, type Joint, type Suggestion } from '../api';
 import { useExercises, useSession } from '../hooks';
 import { JOINT_LABELS, MUSCLE_LABELS } from '../format';
 import { Sheet } from './Sheet';
+import { openDemo } from './DemoSheet';
 
 /** Searchable exercise list. When `similarTo` is given, alternatives that hit the same muscles come first. */
 function VideoLink({ name }: { name: string }) {
   return (
-    <a className="btn icon ghost" href={videoUrl(name)} target="_blank" rel="noreferrer noopener" aria-label={`Watch ${name} on YouTube`}
-      title="Watch a demo" onClick={(e) => e.stopPropagation()}>
+    <a className="btn icon ghost" href={videoUrl(name)} target="_blank" rel="noreferrer noopener" aria-label={`Watch ${name} demo`}
+      title="Watch a demo" onClick={(e) => { e.preventDefault(); e.stopPropagation(); openDemo(name); }}>
       <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M10 8.5v7l6-3.5-6-3.5z" /><rect x="2.5" y="5" width="19" height="14" rx="4" fill="none" stroke="currentColor" strokeWidth="2" /></svg>
     </a>
   );

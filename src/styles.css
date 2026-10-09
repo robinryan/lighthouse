@@ -246,3 +246,34 @@ label.field > span { font-weight: 600; }
 .when { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em; padding: 1px 5px; border-radius: 4px; }
 .when.before { background: rgba(62, 207, 142, 0.16); color: var(--good); }
 .when.after { background: rgba(120, 140, 255, 0.18); color: #8ea2ff; }
+
+/* ---- Phone / gym ergonomics ---- */
+button, a, input, select, textarea, [role='button'] { touch-action: manipulation; }
+input, select, textarea { font-size: 16px; } /* < 16px makes iOS zoom in on focus */
+.check { width: 48px; height: 46px; }
+.set-table input { min-height: 46px; font-size: 18px; }
+.set-num .prev { min-height: 40px; }
+
+/* Sticky workout header: timer, progress and Finish stay in reach while scrolling. */
+.workout-header {
+  position: sticky; top: 0; z-index: 15; margin: -16px -16px 12px; padding: calc(env(safe-area-inset-top, 0px) + 10px) 16px 10px;
+  background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border);
+}
+.workout-header h1 { font-size: 20px; }
+.ex-card { scroll-margin-top: 96px; }
+
+/* Finished exercises collapse to one line. */
+.collapsed-card { display: flex; align-items: center; gap: 12px; cursor: pointer; padding: 12px 14px; }
+.done-dot { width: 28px; height: 28px; border-radius: 50%; background: var(--good); color: #062214; font-weight: 900; display: inline-flex; align-items: center; justify-content: center; flex: none; }
+
+/* Stretch flags collapse to a summary line. */
+.stretch-summary { display: flex; align-items: center; gap: 8px; width: 100%; background: none; border: 0; color: inherit; padding: 4px 0; cursor: pointer; font: inherit; text-align: left; min-height: 40px; }
+
+/* In-app video demos */
+.video-box { position: relative; width: 100%; aspect-ratio: 16 / 9; border-radius: 12px; overflow: hidden; background: #000; }
+.video-frame, .video-box iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+.video-play { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; background: radial-gradient(circle, #222 0%, #000 70%); color: #fff; border: 0; cursor: pointer; font: inherit; }
+.video-fallback { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; background: var(--surface-2); color: var(--text); padding: 16px; text-align: center; }
+
+.install-card { display: flex; align-items: center; gap: 10px; }
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; animation: none !important; } }

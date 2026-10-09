@@ -80,6 +80,13 @@ export function RestTimerProvider({ children }: { children: ReactNode }) {
 
   const remaining = timer ? Math.max(0, (timer.endsAt - now) / 1000) : 0;
 
+  // Countdown in the tab title, so it shows in the app switcher.
+  useEffect(() => {
+    const base = 'Lighthouse';
+    document.title = timer ? (remaining > 0 ? `${fmtDuration(remaining)} · Rest` : 'Go! · Lighthouse') : base;
+    return () => { document.title = base; };
+  }, [timer, Math.ceil(remaining)]);
+
   useEffect(() => {
     if (!timer) return;
     if (remaining > 0) { fired.current = false; return; }

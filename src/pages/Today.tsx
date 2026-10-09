@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router';
 import { getToday, localDate, startWorkout, summary } from '../api';
 import { useAsync, useSession } from '../hooks';
 import { ExerciseName } from '../components/ExerciseName';
+import { InstallPrompt } from '../components/InstallPrompt';
 import { fmtDate, fmtNum } from '../format';
 
 export function TodayPage() {
@@ -44,6 +45,8 @@ export function TodayPage() {
           <h1>{greeting}{profile.name ? `, ${profile.name.split(' ')[0]}` : ''}</h1>
         </div>
       </div>
+
+      <InstallPrompt />
 
       {stats.data && (
         <div className="stat-grid">

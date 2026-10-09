@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import {
   addExerciseToWorkout, addSet as addSetApi, deleteSet, discardWorkout, finishWorkout, flushOutbox, getWorkout, patchSet,
   addStretch, getAddSuggestions, parseSkip, describeSkip, removeWorkoutExercise, replaceSkipped, skipSet, swapExercise, unskipExercise,
   updateWorkout, updateWorkoutExercise, type SetDTO, type Suggestion, type Units, type WorkoutExercise,
 } from '../api';
-import { useAsync, useOnline, useSession } from '../hooks';
+import { pref, useAsync, useOnline, useSession, useWakeLock } from '../hooks';
 import { e1rm, fmtDuration, fmtNum } from '../format';
 import { prefs, unlockAudio, useRestTimer } from '../components/RestTimer';
 import { ExercisePicker } from '../components/ExercisePicker';
@@ -39,6 +39,8 @@ export function WorkoutPage() {
   const timer = useRestTimer();
 
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
+  // Keep the screen on between sets while the workout is in progress.
+  useWakeLock(!!w && w.status === 'in_progress' && pref('lh_wakelock'));
   useEffect(() => { if (online) void flushOutbox(); }, [online]);
 
   const progress = useMemo(() => {
@@ -86,7 +88,7 @@ export function WorkoutPage() {
 
   return (
     <div>
-      <div className="page-header">
+      <div className={`page-header ${readOnly ? '' : 'workout-header'}`}>
         <div className="grow">
           <h1 style={{ marginBottom: 2 }}>{w.title}</h1>
           <div className="small muted num">
@@ -162,6 +164,10 @@ function ExerciseCard({ ex, units, readOnly, isLast, nextName, onLocalChange, on
   const [swap, setSwap] = useState<null | 'pick' | { id: string; name: string }>(null);
   const [plates, setPlates] = useState<number | null>(null);
   const [skip, setSkip] = useState<null | { kind: 'exercise' } | { kind: 'set'; setId: number }>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [expanded, setExpanded] = useState(false);
+  const complete = !ex.skipped && ex.sets.length > 0 && ex.sets.every((s) => s.done || s.skipped);
+  const collapsed = complete && !expanded && !readOnly && pref('lh_collapse');
   const [setOptions, setSetOptions] = useState<SetDTO | null>(null);
   const isBarbell = ex.equipment.includes('barbell');
   const working = ex.sets.filter((s) => s.kind === 'working');
@@ -183,6 +189,12 @@ function ExerciseCard({ ex, units, readOnly, isLast, nextName, onLocalChange, on
       patch.actualWeight = typed.weight ?? s.targetWeight;
     }
     setLocal(s.id, patch);
+    if (done && prefs().vibrate && 'vibrate' in navigator) navigator.vibrate(12);
+    // Last open set of this exercise: bring the next exercise into view.
+    if (done && ex.sets.every((x) => x.id === s.id || x.done || x.skipped)) {
+      setExpanded(false);
+      setTimeout(() => (cardRef.current?.nextElementSibling as HTMLElement | null)?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 250);
+    }
     await patchSet(s.id, patch);
     if (done && prefs().autoStart && ex.restSeconds > 0) {
       const idx = ex.sets.findIndex((x) => x.id === s.id);
@@ -244,7 +256,7 @@ function ExerciseCard({ ex, units, readOnly, isLast, nextName, onLocalChange, on
     if (ex.skipped) {
       const why = parseSkip(ex.skipReason);
       return (
-        <div className="card ex-card skipped-card">
+        <div ref={cardRef} className="card ex-card skipped-card">
           <div className="ex-head" style={{ paddingBottom: 0 }}>
             <div className="grow">
               <div className="row wrap" style={{ gap: 6 }}>
@@ -268,8 +280,29 @@ function ExerciseCard({ ex, units, readOnly, isLast, nextName, onLocalChange, on
       );
     }
 
+    if (collapsed) {
+      const best = ex.sets.filter((x) => x.done && x.kind === 'working')
+        .sort((a, b) => (b.actualWeight ?? 0) - (a.actualWeight ?? 0) || (b.actualReps ?? 0) - (a.actualReps ?? 0))[0];
+      const doneCount = ex.sets.filter((x) => x.done && x.kind === 'working').length;
+      return (
+        <div ref={cardRef} className="card ex-card collapsed-card" role="button" tabIndex={0}
+          onClick={() => setExpanded(true)} onKeyDown={(e) => { if (e.key === 'Enter') setExpanded(true); }}>
+          <span className="done-dot" aria-hidden="true">✓</span>
+          <div className="grow">
+            <div style={{ fontWeight: 700 }}>{ex.name}</div>
+            <div className="small muted">
+              {doneCount} set{doneCount === 1 ? '' : 's'} done
+              {best && ex.loadType !== 'time' && best.actualWeight ? ` · best ${fmtNum(best.actualWeight)}×${best.actualReps}` : ''}
+              {ex.sets.some((x) => x.skipped) ? ' · some skipped' : ''}
+            </div>
+          </div>
+          <span className="small muted">Edit</span>
+        </div>
+      );
+    }
+
     return (
-      <div className="card ex-card">
+      <div ref={cardRef} className="card ex-card">
         <div className="ex-head">
           <div className="grow">
             <div className="row wrap" style={{ gap: 6 }}>
@@ -303,8 +336,14 @@ function ExerciseCard({ ex, units, readOnly, isLast, nextName, onLocalChange, on
       {tipsEnabled() && <div style={{ margin: '0 4px 8px' }}><FormTips tips={ex.tips} /></div>}
       {!ex.stretch && ex.stretchRecs.length > 0 && (
         <div className="stretch-recs">
-          <div className="small" style={{ fontWeight: 700, marginBottom: 4 }}>Stretches for this lift</div>
-          {(allRecs ? ex.stretchRecs : ex.stretchRecs.slice(0, 3)).map((r) => (
+          <button className="stretch-summary" onClick={() => setAllRecs((v) => !v)} aria-expanded={allRecs}>
+            <span className="small" style={{ fontWeight: 700 }}>Stretches for this lift</span>
+            <span className="tiny muted grow" style={{ textAlign: 'left' }}>
+              {ex.stretchRecs.slice(0, 2).map((r) => `${r.when === 'before' ? 'Before' : 'After'}: ${r.name} ${r.importance}/10`).join(' · ')}
+            </span>
+            <span aria-hidden="true">{allRecs ? '▴' : '▾'}</span>
+          </button>
+          {allRecs && ex.stretchRecs.map((r) => (
             <div key={`${r.stretchId}-${r.when}`} className="stretch-rec">
               <Importance value={r.importance} />
               <div className="grow">
@@ -321,9 +360,6 @@ function ExerciseCard({ ex, units, readOnly, isLast, nextName, onLocalChange, on
                 )}
             </div>
           ))}
-          {ex.stretchRecs.length > 3 && (
-            <button className="link-btn tiny" onClick={() => setAllRecs((v) => !v)}>{allRecs ? 'Show fewer' : `Show all ${ex.stretchRecs.length}`}</button>
-          )}
         </div>
       )}
 
@@ -514,7 +550,8 @@ function SetRow({ s, n, ex, prev, readOnly, showWeight, onToggle, onEdit, onMenu
       {showWeight && (
         <td>
           <input
-            inputMode="decimal" aria-label="Weight" disabled={readOnly} value={w}
+            inputMode="decimal" enterKeyHint="next" aria-label="Weight" disabled={readOnly} value={w}
+            onFocus={(e) => e.currentTarget.select()}
             placeholder={s.targetWeight != null ? fmtNum(s.targetWeight) : ex.loadType === 'bodyweight' ? '0' : '?'}
             onChange={(e) => setW(e.target.value)}
             onBlur={() => void onEdit(s, 'actualWeight', w)}
@@ -523,7 +560,8 @@ function SetRow({ s, n, ex, prev, readOnly, showWeight, onToggle, onEdit, onMenu
       )}
       <td>
         <input
-          inputMode="numeric" aria-label={ex.loadType === 'time' ? 'Seconds' : 'Reps'} disabled={readOnly} value={r}
+          inputMode="numeric" enterKeyHint="done" aria-label={ex.loadType === 'time' ? 'Seconds' : 'Reps'} disabled={readOnly} value={r}
+          onFocus={(e) => e.currentTarget.select()}
           placeholder={s.targetReps != null ? `${s.targetReps}${s.amrap ? '+' : ''}` : ''}
           onChange={(e) => setR(e.target.value)}
           onBlur={() => void onEdit(s, 'actualReps', r)}

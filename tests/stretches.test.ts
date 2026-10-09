@@ -44,3 +44,10 @@ test('a sensitive joint raises the rating and explains why', () => {
   assert.equal(sore.importance, Math.min(10, plain.importance + 2));
   assert.match(sore.why, /shoulders is sensitive|shoulders are sensitive/);
 });
+
+test('every exercise has an embeddable demo video id', async () => {
+  const { EXERCISE_VIDEOS } = await import('../supabase/functions/_shared/exerciseVideos.ts');
+  for (const e of EXERCISES) {
+    assert.match(EXERCISE_VIDEOS[e.id]?.videoId ?? '', /^[A-Za-z0-9_-]{11}$/, e.id);
+  }
+});

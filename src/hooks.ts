@@ -53,3 +53,33 @@ export function useOnline() {
   }, []);
   return online;
 }
+
+/** Keep the screen on while `active` (e.g. during a workout). Re-acquires after the tab becomes visible again. */
+export function useWakeLock(active: boolean) {
+  useEffect(() => {
+    if (!active || !('wakeLock' in navigator)) return;
+    let sentinel: { release(): Promise<void> } | null = null;
+    let cancelled = false;
+    const acquire = async () => {
+      try {
+        if (document.visibilityState !== 'visible') return;
+        sentinel = await (navigator as unknown as { wakeLock: { request(t: 'screen'): Promise<{ release(): Promise<void> }> } }).wakeLock.request('screen');
+        if (cancelled) void sentinel.release();
+      } catch { /* denied or unsupported (e.g. low battery) */ }
+    };
+    void acquire();
+    document.addEventListener('visibilitychange', acquire);
+    return () => {
+      cancelled = true;
+      document.removeEventListener('visibilitychange', acquire);
+      void sentinel?.release().catch(() => {});
+    };
+  }, [active]);
+}
+
+export function pref(key: string, fallback = true): boolean {
+  try {
+    const v = localStorage.getItem(key);
+    return v == null ? fallback : v !== 'off';
+  } catch { return fallback; }
+}

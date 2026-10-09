@@ -1,14 +1,15 @@
 import { EXERCISE_TIPS, videoUrl } from '../api';
+import { openDemo } from './DemoSheet';
 
 export function tipsEnabled(): boolean {
   try { return localStorage.getItem('lh_tips') !== 'off'; } catch { return true; }
 }
 
-/** Exercise name linking to a YouTube form demo. */
+/** Exercise name that opens its form demo in an in-app sheet (the href is the YouTube fallback). */
 export function ExerciseName({ name, className, style }: { name: string; className?: string; style?: React.CSSProperties }) {
   return (
     <a className={`ex-link ${className ?? ''}`} style={style} href={videoUrl(name)} target="_blank" rel="noreferrer noopener"
-      title={`Watch how to do ${name} on YouTube`} onClick={(e) => e.stopPropagation()}>
+      title={`Watch how to do ${name}`} onClick={(e) => { e.preventDefault(); e.stopPropagation(); openDemo(name); }}>
       {name}
       <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M10 8.5v7l6-3.5-6-3.5z" /><rect x="2.5" y="5" width="19" height="14" rx="4" fill="none" stroke="currentColor" strokeWidth="2" /></svg>
     </a>

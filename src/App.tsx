@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router';
 import { db, flushOutbox, getProfile, isConfigured, NetworkError, type Profile, type User } from './api';
 import { SessionContext, useOnline } from './hooks';
@@ -7,12 +7,17 @@ import { LoginPage } from './pages/Login';
 import { SetupPage } from './pages/Setup';
 import { TodayPage } from './pages/Today';
 import { WorkoutPage } from './pages/Workout';
-import { HistoryPage, WorkoutDetailPage } from './pages/History';
-import { ExerciseProgressPage, ProgressPage } from './pages/Progress';
-import { ProgramPage } from './pages/Program';
-import { CoachPage } from './pages/Coach';
-import { SettingsPage } from './pages/Settings';
-import { HealthPage } from './pages/Health';
+import { DemoHost } from './components/DemoSheet';
+
+// Today and the workout screen load with the app; everything else loads on first visit (smaller first download on mobile data).
+const HistoryPage = lazy(() => import('./pages/History').then((m) => ({ default: m.HistoryPage })));
+const WorkoutDetailPage = lazy(() => import('./pages/History').then((m) => ({ default: m.WorkoutDetailPage })));
+const ProgressPage = lazy(() => import('./pages/Progress').then((m) => ({ default: m.ProgressPage })));
+const ExerciseProgressPage = lazy(() => import('./pages/Progress').then((m) => ({ default: m.ExerciseProgressPage })));
+const ProgramPage = lazy(() => import('./pages/Program').then((m) => ({ default: m.ProgramPage })));
+const CoachPage = lazy(() => import('./pages/Coach').then((m) => ({ default: m.CoachPage })));
+const SettingsPage = lazy(() => import('./pages/Settings').then((m) => ({ default: m.SettingsPage })));
+const HealthPage = lazy(() => import('./pages/Health').then((m) => ({ default: m.HealthPage })));
 
 const Icon = ({ d }: { d: string }) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d={d} /></svg>
@@ -33,8 +38,11 @@ function Shell({ children }: { children: React.ReactNode }) {
   return (
     <>
       {!online && <div className="offline-pill">Offline — sets will sync later</div>}
-      <main className={`app ${timer ? 'with-timer' : ''}`}>{children}</main>
+      <main className={`app ${timer ? 'with-timer' : ''}`}>
+        <Suspense fallback={<p className="muted center" style={{ marginTop: '20vh' }}>Loading…</p>}>{children}</Suspense>
+      </main>
       <RestTimerBar />
+      <DemoHost />
       <div className="tabbar">
         <nav>
           {TABS.map((t) => (
