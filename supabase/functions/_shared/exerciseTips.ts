@@ -411,6 +411,46 @@ export const EXERCISE_TIPS: Record<string, [string, string, string]> = {
     'Extend opposite arm and leg and hold, hips level.',
     'Move slowly and do the same reps on each side.',
   ],
+  leg_swings: [
+    'Hold onto something for balance and keep your torso tall.',
+    'Start small and let the range grow each swing — don\'t kick or force it.',
+    '10 swings front-to-back and 10 side-to-side per leg, 1–2 rounds.',
+  ],
+  arm_circles: [
+    'Start with small circles and grow them to full range.',
+    'Keep your ribs down and shoulders away from your ears.',
+    '10 forward and 10 backward, 1–2 rounds.',
+  ],
+  hip_90_90: [
+    'Sit tall; use your hands behind you for support if needed.',
+    'Rotate both knees together to switch sides, slowly and under control.',
+    '6 switches per side, 2 rounds — pause briefly in each position.',
+  ],
+  lat_stretch: [
+    'Hold a post at about hip height and sit your hips back.',
+    'Let your head drop between your arms and breathe into your side.',
+    'Hold 30 s per side, 2 rounds — a gentle pull, never pain.',
+  ],
+  calf_stretch: [
+    'Keep the back heel down and the back knee straight.',
+    'Lean forward until you feel the calf; bend the knee slightly to target the lower calf.',
+    'Hold 30 s per side, 2 rounds.',
+  ],
+  triceps_stretch: [
+    'Reach your hand down between your shoulder blades.',
+    'Gently press the elbow with your other hand; keep your ribs down.',
+    'Hold 30 s per side, 2 rounds.',
+  ],
+  quad_stretch: [
+    'Hold your ankle and keep your knees together.',
+    'Squeeze the glute on the stretching side to deepen it at the hip.',
+    'Hold 30 s per side, 2 rounds; hold a wall for balance.',
+  ],
+  cross_body_shoulder: [
+    'Pull the arm across your chest at the elbow, not the wrist.',
+    'Keep the shoulder down, away from your ear.',
+    'Hold 30 s per side, 2 rounds.',
+  ],
 };
 
 /** YouTube search for a form demonstration. Search links never go stale the way single video links can. */

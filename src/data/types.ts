@@ -40,6 +40,10 @@ export interface WorkoutExercise {
   perHand: boolean; equipment: Equipment[]; cues: string; muscles: string[];
   previous: Array<{ reps: number | null; weight: number | null }>; bestE1rm: number; sets: SetDTO[];
   tips: string[]; videoUrl: string; skipped: boolean; skipReason: string | null;
+  /** Set when this row is a stretch: which exercise it's for, before or after it, and why. */
+  stretch: { forExerciseId: string; forName: string; when: 'before' | 'after'; importance: number | null; why: string | null; dose: string | null } | null;
+  /** For regular exercises: recommended stretches, and whether each is already in this workout. */
+  stretchRecs: Array<{ stretchId: string; name: string; when: 'before' | 'after'; importance: number; why: string; dose: string | null; inWorkout: boolean }>;
 }
 
 export interface FinishSummary {

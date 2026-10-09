@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import {
   addExerciseToWorkout, addSet as addSetApi, deleteSet, discardWorkout, finishWorkout, flushOutbox, getWorkout, patchSet,
-  getAddSuggestions, parseSkip, describeSkip, removeWorkoutExercise, replaceSkipped, skipSet, swapExercise, unskipExercise,
+  addStretch, getAddSuggestions, parseSkip, describeSkip, removeWorkoutExercise, replaceSkipped, skipSet, swapExercise, unskipExercise,
   updateWorkout, updateWorkoutExercise, type SetDTO, type Suggestion, type Units, type WorkoutExercise,
 } from '../api';
 import { useAsync, useOnline, useSession } from '../hooks';
@@ -167,6 +167,8 @@ function ExerciseCard({ ex, units, readOnly, isLast, nextName, onLocalChange, on
   const working = ex.sets.filter((s) => s.kind === 'working');
   const weightHeader = ex.loadType === 'bodyweight' ? `+${units}` : ex.perHand ? `${units} ea` : units;
   const repsHeader = ex.loadType === 'time' ? 'Sec' : 'Reps';
+  const showWeight = ex.loadType !== 'time' && !ex.stretch;
+  const [allRecs, setAllRecs] = useState(false);
 
   function setLocal(setId: number, patch: Partial<SetDTO>) {
     onLocalChange((e) => ({ ...e, sets: e.sets.map((s) => (s.id === setId ? { ...s, ...patch } : s)) }));
@@ -182,7 +184,7 @@ function ExerciseCard({ ex, units, readOnly, isLast, nextName, onLocalChange, on
     }
     setLocal(s.id, patch);
     await patchSet(s.id, patch);
-    if (done && prefs().autoStart) {
+    if (done && prefs().autoStart && ex.restSeconds > 0) {
       const idx = ex.sets.findIndex((x) => x.id === s.id);
       const next = ex.sets.slice(idx + 1).find((x) => !x.done && !x.skipped);
       if (next || !isLast) {
@@ -272,26 +274,65 @@ function ExerciseCard({ ex, units, readOnly, isLast, nextName, onLocalChange, on
           <div className="grow">
             <div className="row wrap" style={{ gap: 6 }}>
               <ExerciseName name={ex.name} className="ex-title" />
-              <span className={`badge ${ex.tier}`}>{ex.tier === 'T1' ? 'MAIN · HEAVY' : ex.tier === 'T2' ? 'MAIN · VOLUME' : 'ACCESSORY'}</span>
+              {ex.stretch
+                ? <span className="badge stretch">{ex.stretch.when === 'before' ? 'STRETCH · BEFORE' : 'COOL-DOWN · AFTER'}</span>
+                : <span className={`badge ${ex.tier}`}>{ex.tier === 'T1' ? 'MAIN · HEAVY' : ex.tier === 'T2' ? 'MAIN · VOLUME' : 'ACCESSORY'}</span>}
             </div>
-            <div className="small muted">
-              {ex.schemeLabel}{ex.loadType !== 'time' && firstWorkWeight ? ` @ ${fmtNum(firstWorkWeight)} ${units}${ex.perHand ? ' each' : ''}` : ''}
-              {' · '}rest {fmtDuration(ex.restSeconds)}
-              {ex.substitutedFrom ? ' · swapped' : ''}
-            </div>
+            {ex.stretch ? (
+              <div className="small muted">
+                {ex.stretch.when === 'before' ? 'Before' : 'After'} {ex.stretch.forName} · <b>How long:</b> {ex.stretch.dose}
+              </div>
+            ) : (
+              <div className="small muted">
+                {ex.schemeLabel}{ex.loadType !== 'time' && firstWorkWeight ? ` @ ${fmtNum(firstWorkWeight)} ${units}${ex.perHand ? ' each' : ''}` : ''}
+                {' · '}rest {fmtDuration(ex.restSeconds)}
+                {ex.substitutedFrom ? ' · swapped' : ''}
+              </div>
+            )}
           </div>
           {!readOnly && <button className="btn icon ghost" onClick={() => setMenu(true)} aria-label="Exercise options">⋯</button>}
         </div>
         {ex.engineNote && <div className="notice" style={{ margin: '0 4px 8px' }}>{ex.engineNote}</div>}
         {ex.notes && <div className="small" style={{ margin: '0 4px 8px' }}>📝 {ex.notes}</div>}
-        {tipsEnabled() && <div style={{ margin: '0 4px 8px' }}><FormTips tips={ex.tips} /></div>}
+        {ex.stretch?.importance != null && (
+        <div className="imp-row">
+          <Importance value={ex.stretch.importance} />
+          <span className="small">{ex.stretch.why}</span>
+        </div>
+      )}
+      {tipsEnabled() && <div style={{ margin: '0 4px 8px' }}><FormTips tips={ex.tips} /></div>}
+      {!ex.stretch && ex.stretchRecs.length > 0 && (
+        <div className="stretch-recs">
+          <div className="small" style={{ fontWeight: 700, marginBottom: 4 }}>Stretches for this lift</div>
+          {(allRecs ? ex.stretchRecs : ex.stretchRecs.slice(0, 3)).map((r) => (
+            <div key={`${r.stretchId}-${r.when}`} className="stretch-rec">
+              <Importance value={r.importance} />
+              <div className="grow">
+                <div className="small">
+                  <span className={`when ${r.when}`}>{r.when === 'before' ? 'Before' : 'After'}</span>{' '}
+                  <ExerciseName name={r.name} style={{ fontWeight: 600 }} />
+                </div>
+                {r.dose && <div className="tiny"><b>How long:</b> {r.dose}</div>}
+                <div className="tiny muted">{r.why}</div>
+              </div>
+              {r.inWorkout ? <span className="tiny muted" style={{ whiteSpace: 'nowrap' }}>✓ Added</span>
+                : !readOnly && (
+                  <button className="btn sm" onClick={async () => { await addStretch(workoutId, ex.id, r.stretchId, r.when); await onReload(); }}>Add</button>
+                )}
+            </div>
+          ))}
+          {ex.stretchRecs.length > 3 && (
+            <button className="link-btn tiny" onClick={() => setAllRecs((v) => !v)}>{allRecs ? 'Show fewer' : `Show all ${ex.stretchRecs.length}`}</button>
+          )}
+        </div>
+      )}
 
         <table className="set-table">
           <thead>
             <tr>
               <th>Set</th>
               <th>Previous</th>
-              {ex.loadType !== 'time' && <th>{weightHeader}</th>}
+              {showWeight && <th>{weightHeader}</th>}
               <th>{repsHeader}</th>
               <th aria-label="Done" />
             </tr>
@@ -302,7 +343,7 @@ function ExerciseCard({ ex, units, readOnly, isLast, nextName, onLocalChange, on
               const n = isWarm ? 0 : ++workingNo;
               return (
                 <SetRow
-                  key={s.id} s={s} n={n} ex={ex} readOnly={readOnly}
+                  key={s.id} s={s} n={n} ex={ex} readOnly={readOnly} showWeight={showWeight}
                   prev={isWarm ? null : ex.previous[n - 1] ?? null}
                   onToggle={toggle} onEdit={edit} onMenu={setSetOptions}
                 />
@@ -417,8 +458,8 @@ function parseField(raw: string): number | null | undefined {
   return Number.isFinite(v) && v >= 0 ? v : undefined;
 }
 
-function SetRow({ s, n, ex, prev, readOnly, onToggle, onEdit, onMenu }: {
-  s: SetDTO; n: number; ex: WorkoutExercise; prev: { reps: number | null; weight: number | null } | null; readOnly: boolean;
+function SetRow({ s, n, ex, prev, readOnly, showWeight, onToggle, onEdit, onMenu }: {
+  s: SetDTO; n: number; ex: WorkoutExercise; prev: { reps: number | null; weight: number | null } | null; readOnly: boolean; showWeight: boolean;
   onToggle: (s: SetDTO, typed: { reps: number | null; weight: number | null }) => Promise<void>;
   onEdit: (s: SetDTO, field: 'actualReps' | 'actualWeight', raw: string) => Promise<void>;
   onMenu: (s: SetDTO) => void;
@@ -450,7 +491,7 @@ function SetRow({ s, n, ex, prev, readOnly, onToggle, onEdit, onMenu }: {
     return (
       <tr className="skipped">
         {numberCell}
-        <td colSpan={ex.loadType === 'time' ? 3 : 4} className="small muted" style={{ textAlign: 'left', padding: '10px 6px' }}>
+        <td colSpan={showWeight ? 4 : 3} className="small muted" style={{ textAlign: 'left', padding: '10px 6px' }}>
           Skipped{why ? ` — ${describeSkip(why)}` : ''}
         </td>
       </tr>
@@ -470,7 +511,7 @@ function SetRow({ s, n, ex, prev, readOnly, onToggle, onEdit, onMenu }: {
           {prev ? (ex.loadType === 'time' ? `${prev.reps}s` : `${fmtNum(prev.weight ?? 0)}×${prev.reps}`) : '—'}
         </button>
       </td>
-      {ex.loadType !== 'time' && (
+      {showWeight && (
         <td>
           <input
             inputMode="decimal" aria-label="Weight" disabled={readOnly} value={w}
@@ -498,4 +539,10 @@ function SetRow({ s, n, ex, prev, readOnly, onToggle, onEdit, onMenu }: {
       </td>
     </tr>
   );
+}
+
+/** Importance out of 10, coloured by how much it matters. */
+function Importance({ value }: { value: number }) {
+  const level = value >= 7 ? 'high' : value >= 5 ? 'mid' : 'low';
+  return <span className={`imp ${level}`} title={`Importance ${value} out of 10`}>{value}/10</span>;
 }

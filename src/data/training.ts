@@ -3,6 +3,8 @@
 
 import { EXERCISE_MAP, getExercise } from '../../supabase/functions/_shared/exercises.ts';
 import { EXERCISE_TIPS, videoUrl } from '../../supabase/functions/_shared/exerciseTips.ts';
+import { AUTO_ADD_THRESHOLD, STRETCH_DOSE, type StretchWhen, stretchesFor } from '../../supabase/functions/_shared/stretches.ts';
+import type { Joint } from '../../supabase/functions/_shared/exercises.ts';
 import {
   type FiveRMs, type LiftState, type PerformedSet, type Tier, type Units,
   convertState, convertWeight, e1rm, evaluate, generateProgram, initialState, prescribe, roundWeight,
@@ -188,6 +190,68 @@ export async function getToday(date: string): Promise<Today> {
 // ---------------------------------------------------------------------------
 // Workouts
 
+async function insertStretch(workoutId: number, stretchId: string, forExerciseId: string, when: StretchWhen, position: number) {
+  const dose = STRETCH_DOSE[stretchId] ?? { sets: 2, reps: 30, unit: 's' as const, text: '2 × 30 s' };
+  const row = must(await db().from('workout_exercises').insert({
+    workout_id: workoutId, exercise_id: stretchId, position, tier: 'T3', scheme_label: dose.text, rest_seconds: 0,
+    stretch_for: forExerciseId, stretch_when: when,
+  }).select('id').single()) as { id: number };
+  must(await db().from('sets').insert(Array.from({ length: dose.sets }, (_, i) => ({
+    workout_exercise_id: row.id, position: i, kind: 'working', target_reps: dose.reps, target_weight: null,
+  }))));
+  return row.id;
+}
+
+async function sensitiveJoints(profile: FullProfile): Promise<Partial<Record<Joint, number>>> {
+  const { getHealthSummary } = await import('./health');
+  return (await getHealthSummary(profile)).joints;
+}
+
+/** Stretches to add automatically: the key prep drills for each main lift, plus a short cool-down. */
+function planStretches(slots: Array<{ exerciseId: string; tier: Tier }>, sensitive: Partial<Record<Joint, number>>) {
+  const before = new Map<number, Array<{ stretchId: string; forId: string }>>();
+  const used = new Set<string>();
+  const after: Array<{ stretchId: string; forId: string; importance: number }> = [];
+  slots.forEach((slot, i) => {
+    if (slot.tier === 'T3') return;
+    const recs = stretchesFor(slot.exerciseId, sensitive);
+    const pre = recs.filter((r) => r.when === 'before' && r.importance >= AUTO_ADD_THRESHOLD.before && !used.has(r.stretchId)).slice(0, 2);
+    pre.forEach((r) => used.add(r.stretchId));
+    if (pre.length) before.set(i, pre.map((r) => ({ stretchId: r.stretchId, forId: slot.exerciseId })));
+    for (const r of recs) if (r.when === 'after' && r.importance >= AUTO_ADD_THRESHOLD.after) after.push({ stretchId: r.stretchId, forId: slot.exerciseId, importance: r.importance });
+  });
+  const cooldown: typeof after = [];
+  for (const r of after.sort((a, b) => b.importance - a.importance)) {
+    if (cooldown.length >= 2 || used.has(r.stretchId)) continue;
+    used.add(r.stretchId);
+    cooldown.push(r);
+  }
+  return { before, cooldown };
+}
+
+/** Add a recommended stretch: "before" goes right before its exercise, "after" joins the cool-down at the end. */
+export async function addStretch(workoutId: number, forWexId: number, stretchId: string, when: StretchWhen) {
+  if (!STRETCH_DOSE[stretchId]) throw new Error('Unknown stretch');
+  const rows = must(await db().from('workout_exercises').select('id, exercise_id, position').eq('workout_id', workoutId)
+    .order('position').order('id')) as Array<{ id: number; exercise_id: string; position: number }>;
+  const target = rows.find((r) => r.id === forWexId);
+  if (!target) throw new Error('Exercise not found');
+  if (when === 'after') {
+    await insertStretch(workoutId, stretchId, target.exercise_id, 'after', rows.length ? Math.max(...rows.map((r) => r.position)) + 1 : 0);
+    return;
+  }
+  // Renumber so the stretch slots in directly before its exercise.
+  const order = rows.map((r) => r.id);
+  const at = order.indexOf(forWexId);
+  for (let i = order.length - 1; i >= at; i--) {
+    must(await db().from('workout_exercises').update({ position: i + 1 }).eq('id', order[i]));
+  }
+  for (let i = 0; i < at; i++) {
+    if (rows[i].position !== i) must(await db().from('workout_exercises').update({ position: i }).eq('id', order[i]));
+  }
+  await insertStretch(workoutId, stretchId, target.exercise_id, 'before', at);
+}
+
 async function insertExercise(
   ctx: Ctx, workoutId: number, exerciseId: string, tier: Tier, position: number,
   slotId: string | null, date: string, substitutedFrom: string | null = null,
@@ -204,7 +268,11 @@ async function insertExercise(
   return row.id;
 }
 
-export async function startWorkout(opts: { date: string; dayIndex?: number; empty?: boolean; title?: string }): Promise<number> {
+export async function startWorkout(opts: {
+  date: string; dayIndex?: number; empty?: boolean; title?: string;
+  /** Add the most important before/after stretches automatically (default true). */
+  autoStretches?: boolean;
+}): Promise<number> {
   const existing = await activeWorkoutId();
   if (existing) return existing;
   const ctx = await loadCtx();
@@ -219,10 +287,16 @@ export async function startWorkout(opts: { date: string; dayIndex?: number; empt
   const day = days[idx];
   const w = must(await db().from('workouts').insert({ date: opts.date, day_index: idx, title: day.name }).select('id').single()) as { id: number };
   try {
+    const plan = opts.autoStretches === false
+      ? { before: new Map<number, Array<{ stretchId: string; forId: string }>>(), cooldown: [] }
+      : planStretches(day.slots, await sensitiveJoints(ctx.profile));
+    let pos = 0;
     for (let i = 0; i < day.slots.length; i++) {
+      for (const st of plan.before.get(i) ?? []) await insertStretch(w.id, st.stretchId, st.forId, 'before', pos++);
       const slot = day.slots[i];
-      await insertExercise(ctx, w.id, slot.exerciseId, slot.tier, i, slot.id, opts.date);
+      await insertExercise(ctx, w.id, slot.exerciseId, slot.tier, pos++, slot.id, opts.date);
     }
+    for (const st of plan.cooldown) await insertStretch(w.id, st.stretchId, st.forId, 'after', pos++);
   } catch (e) {
     await db().from('workouts').delete().eq('id', w.id);
     throw e;
@@ -240,6 +314,8 @@ function toDTOSet(s: SetRow) {
 
 export async function getWorkout(id: number): Promise<Workout> {
   const { workout: w, exercises } = await loadWorkout(db(), id);
+  const sensitive = await sensitiveJoints(await getProfile()).catch(() => ({}));
+  const present = new Set(exercises.filter((e) => !e.skipped).map((e) => `${e.exercise_id}|${e.stretch_when ?? ''}`));
   const ids = [...new Set(exercises.map((e) => e.exercise_id))];
   // Previous performance and best e1RM come from other completed workouts.
   const history = ids.length
@@ -264,6 +340,17 @@ export async function getWorkout(id: number): Promise<Workout> {
         tips: EXERCISE_TIPS[we.exercise_id] ?? [],
         videoUrl: videoUrl(ex?.name ?? we.exercise_id),
         skipped: !!we.skipped, skipReason: we.skip_reason ?? null,
+        stretch: we.stretch_when && we.stretch_for ? (() => {
+          const rec = stretchesFor(we.stretch_for, sensitive).find((r) => r.stretchId === we.exercise_id && r.when === we.stretch_when);
+          return {
+            forExerciseId: we.stretch_for, forName: EXERCISE_MAP.get(we.stretch_for)?.name ?? we.stretch_for, when: we.stretch_when,
+            importance: rec?.importance ?? null, why: rec?.why ?? null, dose: STRETCH_DOSE[we.exercise_id]?.text ?? we.scheme_label,
+          };
+        })() : null,
+        stretchRecs: we.stretch_when ? [] : stretchesFor(we.exercise_id, sensitive).map((r) => ({
+          stretchId: r.stretchId, name: r.name, when: r.when, importance: r.importance, why: r.why, dose: r.dose?.text ?? null,
+          inWorkout: present.has(`${r.stretchId}|${r.when}`),
+        })),
       };
     }),
   };
@@ -392,6 +479,7 @@ export async function finishWorkout(workoutId: number): Promise<FinishSummary> {
   const newStates: LiftState[] = [];
 
   for (const we of dto.exercises) {
+    if (we.stretch) continue; // stretches don't affect progression or training volume
     const ex = getExercise(we.exerciseId);
     for (const s of we.sets) {
       if (!s.done || s.skipped || s.kind !== 'working') continue;

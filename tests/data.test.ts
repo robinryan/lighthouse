@@ -53,6 +53,8 @@ const profile = (p: Partial<FullProfile> = {}): FullProfile => ({
   onboarded: false, ...p,
 });
 
+const squatOf = (w: { exercises: Array<{ exerciseId: string }> }) => w.exercises.find((e) => e.exerciseId === 'squat')! as any;
+
 async function completeAll(workoutId: number, repsFor: (tier: string, target: number) => number = (_t, n) => n) {
   const w = await T.getWorkout(workoutId);
   for (const ex of w.exercises) {
@@ -80,15 +82,15 @@ test('training flow on Supabase: onboard, train, progress, history, stats', { sk
   const id = await T.startWorkout({ date: '2026-10-09' });
   assert.equal(await T.startWorkout({ date: '2026-10-09' }), id, 'only one workout in progress');
   let w = await T.getWorkout(id);
-  assert.equal(w.exercises[0].exerciseId, 'squat');
-  assert.deepEqual(w.exercises[0].sets.filter((s) => s.kind === 'warmup').map((s) => s.targetWeight), [20, 35, 50, 67.5]);
+  assert.ok(squatOf(w));
+  assert.deepEqual(squatOf(w).sets.filter((s) => s.kind === 'warmup').map((s) => s.targetWeight), [20, 35, 50, 67.5]);
 
   // Ticking a set without typing fills in the targets.
-  const first = w.exercises[0].sets[0];
+  const first = squatOf(w).sets[0];
   await T.updateSet(first.id, { done: true });
   w = await T.getWorkout(id);
-  assert.equal(w.exercises[0].sets[0].actualWeight, 20);
-  assert.equal(w.exercises[0].sets[0].actualReps, 10);
+  assert.equal(squatOf(w).sets[0].actualWeight, 20);
+  assert.equal(squatOf(w).sets[0].actualReps, 10);
 
   await completeAll(id, (tier, n) => (tier === 'T3' ? 15 : n));
   const summary = await T.finishWorkout(id);
@@ -110,11 +112,12 @@ test('training flow on Supabase: onboard, train, progress, history, stats', { sk
 
   // Swap bench for an elbow-friendly press, today only.
   const bench = w.exercises.find((e) => e.exerciseId === 'bench')!;
+  const benchIndex = w.exercises.indexOf(bench);
   await T.swapExercise(bench.id, 'neutral_db_press', 'today');
   w = await T.getWorkout(id2);
   const swapped = w.exercises.find((e) => e.exerciseId === 'neutral_db_press')!;
   assert.equal(swapped.substitutedFrom, 'bench');
-  assert.equal(w.exercises[1].id, swapped.id, 'swap keeps the slot position');
+  assert.equal(w.exercises[benchIndex].id, swapped.id, 'swap keeps the slot position');
   assert.equal((await T.getProgram())!.program.days[0].slots[1].exerciseId, 'bench', 'program unchanged');
 
   await completeAll(id2, (tier, n) => (tier === 'T1' ? n + 2 : tier === 'T3' ? 15 : n));
@@ -146,7 +149,7 @@ test('training flow on Supabase: onboard, train, progress, history, stats', { sk
   await assert.rejects(T.getWorkout(id), /not found/i);
   await T.updateSet(first.id, { actualReps: 99 }).catch(() => {});
   setDb(asA);
-  assert.equal((await T.getWorkout(id)).exercises[0].sets[0].actualReps, 10, 'other user could not edit');
+  assert.equal(squatOf(await T.getWorkout(id)).sets[0].actualReps, 10, 'other user could not edit');
 
   // Switching to lb converts history, lift states, and the program preview.
   const p = await T.getProfile();
@@ -154,7 +157,7 @@ test('training flow on Supabase: onboard, train, progress, history, stats', { sk
   const afterSwitch = await T.getProgramView('2026-10-15');
   assert.equal(afterSwitch!.days[0].exercises[0].weight, 210); // 95 kg ≈ 209 lb → 210
   assert.equal((await T.getProfile()).bodyweight, 179.7);
-  assert.equal((await T.getWorkout(id)).exercises[0].sets[0].actualWeight, 44.1);
+  assert.equal(squatOf(await T.getWorkout(id)).sets[0].actualWeight, 44.1);
 });
 
 test('coach core: proposals are validated, stored, and applied by the app', { skip: !ADMIN_URL && 'TEST_DATABASE_URL not set' }, async () => {
@@ -296,4 +299,48 @@ test('skipping feeds the health profile, suggestions, progression and the coach'
   // Health notes are private.
   setDb(asA);
   assert.equal((await H.listHealthNotes()).length, 0);
+});
+
+test('stretches: auto-added before main lifts and as a cool-down; flags; never affect progression', { skip: !ADMIN_URL && 'TEST_DATABASE_URL not set' }, async () => {
+  const D = { id: '44444444-4444-4444-8444-444444444444', email: 'd@example.com' };
+  await pool.query(`INSERT INTO auth.users (id, email, raw_user_meta_data) VALUES ($1, $2, '{"name":"D"}')`, [D.id, D.email]);
+  setDb(fakeSupabase(pool, D));
+  await T.completeOnboarding(profile({ name: 'D' }), { squat: 100, bench: 70, deadlift: 120, ohp: 45 });
+
+  const id = await T.startWorkout({ date: '2026-10-09' });
+  let w = await T.getWorkout(id);
+  const order = w.exercises.map((e) => `${e.exerciseId}${e.stretch ? `(${e.stretch.when})` : ''}`);
+  // Prep for squat (8 and 7 /10) before it; bench prep before bench; cool-down at the end.
+  assert.deepEqual(order.slice(0, 5), ['ankle_dorsiflexion(before)', 'hip_90_90(before)', 'squat', 'band_pull_apart(before)', 'bench']);
+  assert.deepEqual(order.slice(-2).sort(), ['couch_stretch(after)', 'doorway_pec_stretch(after)']);
+  const ankle = w.exercises[0];
+  assert.equal(ankle.stretch!.forExerciseId, 'squat');
+  assert.equal(ankle.stretch!.importance, 8);
+  assert.equal(ankle.stretch!.dose, '2 × 10 each side');
+  assert.equal(ankle.sets.length, 2);
+  assert.equal(ankle.sets[0].targetReps, 10);
+  assert.equal(ankle.tips.length, 3);
+  assert.equal(ankle.restSeconds, 0);
+
+  // Flags on the squat card: what's already in, and what can be added.
+  const squat = squatOf(w);
+  assert.ok(squat.stretchRecs.find((r: any) => r.stretchId === 'ankle_dorsiflexion').inWorkout);
+  const swings = squat.stretchRecs.find((r: any) => r.stretchId === 'leg_swings');
+  assert.equal(swings.inWorkout, false);
+  await T.addStretch(id, squat.id, 'leg_swings', 'before');
+  w = await T.getWorkout(id);
+  const idx = w.exercises.findIndex((e) => e.exerciseId === 'squat');
+  assert.equal(w.exercises[idx - 1].exerciseId, 'leg_swings', 'added right before squat');
+  assert.equal(new Set(w.exercises.map((e) => e.id)).size, w.exercises.length);
+
+  // Finishing: stretches don't create lift states or count as sets.
+  await completeAll(id, (tier, n) => (tier === 'T3' ? 15 : n));
+  const summary = await T.finishWorkout(id);
+  assert.ok(!summary.results.some((r) => ['ankle_dorsiflexion', 'hip_90_90', 'leg_swings', 'couch_stretch'].includes(r.exerciseId)));
+  const states = (await pool.query(`SELECT exercise_id FROM lift_states WHERE user_id = $1`, [D.id])).rows.map((r) => r.exercise_id);
+  assert.ok(!states.includes('ankle_dorsiflexion'));
+
+  // Turning auto-add off.
+  const id2 = await T.startWorkout({ date: '2026-10-11', autoStretches: false });
+  assert.ok(!(await T.getWorkout(id2)).exercises.some((e) => e.stretch));
 });

@@ -25,6 +25,7 @@ export const SYSTEM = `You are the coach inside Lighthouse, a strength-training 
 How the app trains people:
 - Each day has two main lifts — a heavy T1 lift (e.g. 5×3+, last set as many reps as possible) and a volume T2 lift (e.g. 3×10) — then T3 accessories using double progression (add reps within a range, then add weight).
 - Rotation: A1 Squat T1 + Bench T2, A2 OHP T1 + Deadlift T2, B1 Bench T1 + Squat T2, B2 Deadlift T1 + OHP T2.
+- Workouts also include mobility/stretch items placed before a lift (dynamic prep, short holds) or at the end as a cool-down (longer static holds). Each has an importance rating out of 10.
 - Missed T1/T2 sessions move a lift to the next rep stage at the same weight (5×3 → 6×2 → 10×1); failing the last stage resets the weight lower.
 
 Your job:
@@ -183,7 +184,8 @@ export async function buildContext(db: Db, workout: LoadedWorkout | null, today:
         lines.push(`- workout_exercise_id=${e.id} ${exName(e.exercise_id)} (${e.exercise_id}) SKIPPED${skip ? `: ${describeSkip(skip)}` : ''}`);
         continue;
       }
-      lines.push(`- workout_exercise_id=${e.id} ${exName(e.exercise_id)} (${e.exercise_id}) [${e.tier} ${e.scheme_label}]: ` +
+      const role = e.stretch_when && e.stretch_for ? `stretch ${e.stretch_when} ${exName(e.stretch_for)}, ` : '';
+      lines.push(`- workout_exercise_id=${e.id} ${exName(e.exercise_id)} (${e.exercise_id}) [${role}${e.tier} ${e.scheme_label}]: ` +
         e.sets.map(fmtSet).join(', ') + (e.notes ? ` — note: ${e.notes}` : ''));
       const skippedSets = e.sets.filter((x) => x.skipped);
       if (skippedSets.length) {

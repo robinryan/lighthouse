@@ -24,7 +24,8 @@ export function TodayPage() {
     setBusy(true);
     setError(null);
     try {
-      const id = await startWorkout(empty ? { date, empty: true, title: 'Freestyle workout' } : { date, dayIndex: selected });
+      const autoStretches = (() => { try { return localStorage.getItem('lh_autostretch') !== 'off'; } catch { return true; } })();
+      const id = await startWorkout(empty ? { date, empty: true, title: 'Freestyle workout' } : { date, dayIndex: selected, autoStretches });
       navigate(`/workout/${id}`);
     } catch (e) {
       setError((e as Error).message);

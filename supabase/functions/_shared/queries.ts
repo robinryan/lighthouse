@@ -58,6 +58,7 @@ export interface WexRow {
   id: number; workout_id: number; exercise_id: string; position: number; tier: Tier; slot_id: string | null;
   scheme_label: string; rest_seconds: number; notes: string; engine_note: string | null; substituted_from: string | null;
   skipped: boolean; skip_reason: string | null;
+  stretch_for: string | null; stretch_when: 'before' | 'after' | null;
 }
 export interface SetRow {
   id: number; workout_exercise_id: number; position: number; kind: 'warmup' | 'working'; target_reps: number | null;

@@ -66,6 +66,7 @@ export function SettingsPage() {
       <div className="card">
         <h2>Workout display</h2>
         <Toggle k="lh_tips" label="Show form tips under each exercise" />
+        <Toggle k="lh_autostretch" label="Add recommended stretches automatically (7/10+ prep before main lifts, plus a cool-down)" />
       </div>
 
       <div className="card">
