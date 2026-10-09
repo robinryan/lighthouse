@@ -68,7 +68,10 @@ export interface ProgramDTO { nextDay: number; fiveRMs: Record<string, number | 
 export interface WorkoutListItem { id: number; date: string; title: string; setsDone: number; volume: number; prs: number; durationMin: number | null; exercises: string[] }
 
 export interface CoachAction { type: string; label: string; reason?: string; note?: string; status: 'pending' | 'applied' | 'dismissed' }
-export interface CoachMessage { id: number; role: 'user' | 'assistant'; content: string; createdAt: string; actions: CoachAction[]; sources: Array<{ url: string; title: string }> }
+export interface CoachMessage {
+  id: number; role: 'user' | 'assistant'; content: string; createdAt: string; actions: CoachAction[]; sources: Array<{ url: string; title: string }>;
+  costUsd: number | null; effort: 'low' | 'medium' | null; webSearches: number;
+}
 
 export interface Summary {
   totalWorkouts: number; thisWeek: number; streakWeeks: number; muscleSets: Record<string, number>;

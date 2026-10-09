@@ -2,11 +2,12 @@
 //
 // POST { workoutId: number | null, text: string } with the user's Authorization header.
 // Requires the ANTHROPIC_API_KEY secret (Supabase dashboard → Edge Functions → Secrets).
-// Optional COACH_MODEL secret overrides the model.
+// Optional secrets: COACH_MODEL overrides the model; COACH_MONTHLY_BUDGET_USD sets the
+// per-user monthly spending cap (default 10, 0 = no cap).
 
 import Anthropic from 'npm:@anthropic-ai/sdk@0.132.1';
 import { createClient } from 'npm:@supabase/supabase-js@2.117.3';
-import { runCoach } from '../_shared/coach.ts';
+import { BudgetExceededError, DEFAULT_MONTHLY_BUDGET_USD, runCoach } from '../_shared/coach.ts';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -36,7 +37,7 @@ Deno.serve(async (req) => {
   const { data: userData, error: userError } = await db.auth.getUser(authorization.replace(/^Bearer\s+/i, ''));
   if (userError || !userData.user) return json({ error: 'Not signed in' }, 401);
 
-  let body: { workoutId?: unknown; text?: unknown };
+  let body: { workoutId?: unknown; text?: unknown; research?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -48,9 +49,16 @@ Deno.serve(async (req) => {
 
   try {
     const anthropic = new Anthropic({ apiKey });
-    const reply = await runCoach({ db, anthropic, model: Deno.env.get('COACH_MODEL') ?? undefined, workoutId, text });
+    const budgetEnv = Number(Deno.env.get('COACH_MONTHLY_BUDGET_USD'));
+    const reply = await runCoach({
+      db, anthropic, workoutId, text,
+      model: Deno.env.get('COACH_MODEL') ?? undefined,
+      research: body.research === true,
+      budgetUsd: Number.isFinite(budgetEnv) && Deno.env.get('COACH_MONTHLY_BUDGET_USD') ? budgetEnv : DEFAULT_MONTHLY_BUDGET_USD,
+    });
     return json(reply);
   } catch (err) {
+    if (err instanceof BudgetExceededError) return json({ error: err.message, code: 'budget' }, 402);
     if (err instanceof Anthropic.RateLimitError) return json({ error: 'The coach is busy right now — try again in a minute.' }, 429);
     if (err instanceof Anthropic.AuthenticationError) return json({ error: 'The AI coach API key is invalid.' }, 503);
     if (err instanceof Anthropic.APIError) return json({ error: `Coach error: ${err.message}` }, 502);

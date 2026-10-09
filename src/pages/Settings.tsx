@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router';
-import { db, exportCsv, localDate, regenerateProgram, saveProfile, type Profile } from '../api';
-import { useSession } from '../hooks';
+import { coachUsageThisMonth, db, exportCsv, localDate, regenerateProgram, saveProfile, type Profile } from '../api';
+import { useAsync, useSession } from '../hooks';
 import { ProfileFields } from './Setup';
 
 function Toggle({ k, label }: { k: string; label: string }) {
@@ -24,6 +24,7 @@ export function SettingsPage() {
   const [saved, setSaved] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pw, setPw] = useState('');
+  const usage = useAsync(() => coachUsageThisMonth(), []);
   const [notif, setNotif] = useState(typeof Notification !== 'undefined' ? Notification.permission : 'denied');
 
   async function save(rebuild: boolean) {
@@ -82,6 +83,25 @@ export function SettingsPage() {
           </button>
         )}
         <p className="tiny muted" style={{ marginTop: 6 }}>Tip: install the app to your home screen (Share → Add to Home Screen) for full-screen use and notifications.</p>
+      </div>
+
+      <div className="card">
+        <h2>AI coach usage</h2>
+        {usage.data ? (
+          <>
+            <p className="small" style={{ margin: '4px 0' }}>
+              This month: <b>${usage.data.spentUsd.toFixed(2)}</b>
+              {usage.data.budgetUsd ? <> of ${usage.data.budgetUsd.toFixed(2)} budget</> : null} · {usage.data.messages} replies
+              {usage.data.messages ? ` · avg $${usage.data.avgUsd.toFixed(3)}` : ''}{usage.data.webSearches ? ` · ${usage.data.webSearches} web search${usage.data.webSearches === 1 ? '' : 'es'}` : ''}
+            </p>
+            {usage.data.budgetUsd ? (
+              <div className="bar-track" style={{ margin: '6px 0' }}>
+                <div className="bar-fill" style={{ width: `${Math.min(100, (usage.data.spentUsd / usage.data.budgetUsd) * 100)}%` }} />
+              </div>
+            ) : null}
+            <p className="tiny muted" style={{ margin: 0 }}>Estimated from token counts at list prices. Only the coach chat uses AI; everything else in the app is free to run.</p>
+          </>
+        ) : <p className="small muted">{usage.error ?? 'Loading…'}</p>}
       </div>
 
       <div className="card stack">

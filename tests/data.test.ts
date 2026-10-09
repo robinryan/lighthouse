@@ -344,3 +344,57 @@ test('stretches: auto-added before main lifts and as a cool-down; flags; never a
   const id2 = await T.startWorkout({ date: '2026-10-11', autoStretches: false });
   assert.ok(!(await T.getWorkout(id2)).exercises.some((e) => e.stretch));
 });
+
+test('coach cost controls: caching, trimmed prompt, effort, search limits, usage + budget', { skip: !ADMIN_URL && 'TEST_DATABASE_URL not set' }, async () => {
+  const { buildSystem, TOOLS, chooseEffort } = await import('../supabase/functions/_shared/coach.ts');
+  const { costUsd } = await import('../supabase/functions/_shared/pricing.ts');
+  const E = { id: '55555555-5555-4555-8555-555555555555', email: 'e@example.com' };
+  await pool.query(`INSERT INTO auth.users (id, email, raw_user_meta_data) VALUES ($1, $2, '{"name":"E"}')`, [E.id, E.email]);
+  const asE = fakeSupabase(pool, E);
+  setDb(asE);
+  // Dumbbells + bands only: catalog should leave out barbell/cable/machine work.
+  await T.completeOnboarding(profile({ name: 'E', equipment: ['dumbbell', 'band'] }), {});
+
+  const requests: any[] = [];
+  const usage = { input_tokens: 2000, output_tokens: 400, cache_creation_input_tokens: 3000, cache_read_input_tokens: 0, server_tool_use: { web_search_requests: 1 } };
+  const anthropic = { beta: { messages: { stream: (req: any) => { requests.push(structuredClone(req)); return { finalMessage: async () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: 'ok' }], usage }) }; } } } };
+
+  // Simple question → low effort; injury question → medium; research → medium + note.
+  await runCoach({ db: asE, anthropic, workoutId: null, text: 'How many sets should I do for biceps?', today: '2026-10-10', budgetUsd: 5 });
+  await runCoach({ db: asE, anthropic, workoutId: null, text: 'My knee hurts when I lunge', today: '2026-10-10', budgetUsd: 5 });
+  const r3 = await runCoach({ db: asE, anthropic, workoutId: null, text: 'Is creatine worth it?', research: true, today: '2026-10-10', budgetUsd: 5 });
+  assert.deepEqual(requests.map((r) => r.output_config.effort), ['low', 'medium', 'medium']);
+  assert.match(requests[2].messages.at(-1).content[1].text, /Research requested/);
+  assert.equal(chooseEffort('what should I eat', false), 'low');
+
+  const req = requests[0];
+  assert.deepEqual(req.cache_control, { type: 'ephemeral' }, 'conversation breakpoint');
+  assert.deepEqual(req.system[0].cache_control, { type: 'ephemeral' }, 'system breakpoint');
+  const search = req.tools.find((t: any) => t.type === 'web_search_20260209');
+  assert.equal(search.max_uses, 2);
+  assert.ok(search.allowed_domains.includes('pubmed.ncbi.nlm.nih.gov'));
+  assert.ok(!JSON.stringify(req.tools).includes('"enum":["squat"'), 'no exercise-id enums');
+  assert.ok(!/\nsquat\|/.test(req.system[0].text) && /\ngoblet_squat\|/.test(req.system[0].text), 'catalog filtered to equipment');
+  // Prompt got smaller: full-catalog system + tools well under the old ~6k tokens.
+  const approxTokens = (buildSystem(['barbell', 'dumbbell', 'cable', 'machine', 'pullup_bar', 'band']).length / 3.6) + (JSON.stringify(TOOLS).length / 3.2);
+  assert.ok(approxTokens < 4000, `prompt ≈ ${Math.round(approxTokens)} tokens`);
+
+  // History trimmed to the last 10 messages.
+  for (let i = 0; i < 6; i++) await runCoach({ db: asE, anthropic, workoutId: null, text: `question ${i}`, today: '2026-10-10', budgetUsd: 100 });
+  assert.ok(requests.at(-1).messages.length <= 11, `messages sent: ${requests.at(-1).messages.length}`);
+
+  // Usage and cost are stored with the reply.
+  assert.equal(r3.usage!.effort, 'medium');
+  assert.equal(r3.usage!.webSearches, 1);
+  assert.equal(r3.cost_usd, costUsd('claude-opus-5-5', { inputTokens: 2000, outputTokens: 400, cacheWriteTokens: 3000, cacheReadTokens: 0, webSearches: 1, requests: 1 }));
+  assert.ok(Math.abs(r3.cost_usd! - (0.008 + 0.008 + 0.015 + 0.01)) < 1e-6);
+
+  // Budget: 9 replies × ~$0.041 ≈ $0.37 spent; a $0.30 cap blocks the next message without calling the API.
+  const before = requests.length;
+  await assert.rejects(runCoach({ db: asE, anthropic, workoutId: null, text: 'one more', today: '2026-10-10', budgetUsd: 0.3 }), /budget/);
+  assert.equal(requests.length, before);
+  const { coachUsageThisMonth } = await import('../src/data/coach.ts');
+  const month = await coachUsageThisMonth();
+  assert.equal(month.messages, 9);
+  assert.ok(month.spentUsd > 0.3);
+});

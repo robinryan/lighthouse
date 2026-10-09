@@ -5,22 +5,41 @@
 // `db` is a supabase-js client authenticated as the user (row level security
 // applies), and `anthropic` is an Anthropic SDK client.
 
-import { EXERCISES, EXERCISE_IDS, EXERCISE_MAP, JOINTS, type Joint } from './exercises.ts';
+import { EXERCISES, EXERCISE_MAP, JOINTS, type Equipment, type Joint, hasEquipment } from './exercises.ts';
+import { type UsageTotals, addUsage, costUsd, emptyUsage } from './pricing.ts';
 import { type Db, type LoadedWorkout, loadProfile, loadProgram, loadWorkout, must } from './queries.ts';
 import { type HealthNote, describeHealth, describeSkip, parseSkip, summarizeHealth } from './health.ts';
 
 export const DEFAULT_MODEL = 'claude-opus-5-5';
-const MAX_HISTORY = 20;
-const MAX_ITERATIONS = 8;
+const MAX_HISTORY = 10;
+const MAX_ITERATIONS = 6;
+const RECENT_SESSIONS = 3;
+/** Default monthly spending cap per user (USD); override with the COACH_MONTHLY_BUDGET_USD secret. 0 = no cap. */
+export const DEFAULT_MONTHLY_BUDGET_USD = 10;
+
+/** Sources the coach may search. Keeps results reputable and short. */
+export const SEARCH_DOMAINS = [
+  'pubmed.ncbi.nlm.nih.gov', 'ncbi.nlm.nih.gov', 'bjsm.bmj.com', 'journals.lww.com', 'jospt.org',
+  'physio-pedia.com', 'orthoinfo.aaos.org', 'mayoclinic.org', 'nhs.uk', 'acsm.org', 'nsca.com',
+  'strongerbyscience.com', 'barbellmedicine.com', 'e3rehab.com', 'theprehabguys.com', 'squatuniversity.com',
+];
 
 // ---------------------------------------------------------------------------
 // Prompt
 
-const CATALOG = EXERCISES.map((e) =>
-  `${e.id} | ${e.name} | ${e.category} | ${e.equipment.join('+')} | ${e.muscles.join(',')} | stresses: ${e.stress.join(',') || 'none'}`,
-).join('\n');
+/** Compact catalog of exercises the user can actually do with their equipment. */
+function catalogFor(equipment: Equipment[]): string {
+  return EXERCISES.filter((e) => hasEquipment(e, equipment))
+    .map((e) => `${e.id}|${e.name}|${e.muscles.join(',')}|${e.stress.join(',') || '-'}${e.category === 'mobility' ? '|mobility' : ''}`)
+    .join('\n');
+}
 
-export const SYSTEM = `You are the coach inside Lighthouse, a strength-training app. The user is usually mid-workout on their phone, so be brief and practical: lead with the answer, use short bullet points, and skip preamble.
+/**
+ * The system prompt. It only changes when the user's equipment changes, so it stays
+ * cached across messages.
+ */
+export function buildSystem(equipment: Equipment[]): string {
+  return `You are the coach inside Lighthouse, a strength-training app. The user is usually mid-workout on their phone, so be brief and practical: lead with the answer, use short bullet points, and skip preamble.
 
 How the app trains people:
 - Each day has two main lifts — a heavy T1 lift (e.g. 5×3+, last set as many reps as possible) and a volume T2 lift (e.g. 3×10) — then T3 accessories using double progression (add reps within a range, then add weight).
@@ -29,7 +48,7 @@ How the app trains people:
 - Missed T1/T2 sessions move a lift to the next rep stage at the same weight (5×3 → 6×2 → 10×1); failing the last stage resets the weight lower.
 
 Your job:
-- Answer training questions using evidence-based practice. When a question needs current or specific evidence (injury management, technique research, programming studies), use web search and prefer reputable sources (peer-reviewed research, physiotherapy/sports-medicine organizations, established coaches). Do not invent citations.
+- Answer training questions using evidence-based practice. Answer from your own knowledge by default; use web search only when the user asks you to research something, or a question genuinely needs specific or recent evidence you aren't sure of (e.g. a particular injury or study). One or two searches is plenty. Prefer reputable sources (peer-reviewed research, physiotherapy/sports-medicine organizations, established coaches). Do not invent citations.
 - When something hurts: ask at most one clarifying question only if truly needed; otherwise suggest pain-free alternatives from the catalog, load reductions, and relevant mobility or rehab work. Use the propose_* tools so the user can apply your suggestions with one tap. Prefer keeping the movement pattern and training effect while removing the painful position (e.g. neutral grip, reduced range, machine or dumbbell versions).
 - Safety: you are not a medical professional. If the user describes sharp or sudden pain, a pop, swelling, numbness or tingling, pain that persists at rest or at night, or chest pain/dizziness, tell them to stop the exercise and see a doctor or physiotherapist. Never encourage training through sharp pain. Mild, familiar discomfort that stays at or below about 3/10 and settles within 24 hours is generally acceptable to train around.
 - Only recommend exercises by catalog id via the tools; you may mention others in text but tools must use catalog ids.
@@ -39,13 +58,15 @@ Your job:
 - When the user skipped an exercise or sets (shown in context with the reason), take that reason into account.
 - Weights are in the user's units. Never claim you changed anything — you propose; the user applies.
 
-Exercise catalog (id | name | category | equipment | muscles | joints it stresses):
-${CATALOG}`;
+Exercise catalog — only exercises the user has equipment for (id|name|muscles|joints it stresses):
+${catalogFor(equipment)}`;
+}
 
-const exerciseEnum = { type: 'string', enum: EXERCISE_IDS } as const;
+// Exercise ids are plain strings (validated server-side) — listing all ids as enums would triple the prompt size.
+const exerciseId = { type: 'string', description: 'Catalog exercise id.' } as const;
 
 export const TOOLS = [
-  { type: 'web_search_20260209', name: 'web_search', max_uses: 5 },
+  { type: 'web_search_20260209', name: 'web_search', max_uses: 2, allowed_domains: SEARCH_DOMAINS },
   {
     name: 'propose_swap',
     description: 'Propose replacing an exercise in the current workout with another catalog exercise. The user sees an Apply button.',
@@ -54,7 +75,7 @@ export const TOOLS = [
       type: 'object',
       properties: {
         workout_exercise_id: { type: 'integer', description: 'The id of the exercise row in the current workout (from context).' },
-        new_exercise_id: exerciseEnum,
+        new_exercise_id: exerciseId,
         scope: { type: 'string', enum: ['today', 'program'], description: '"today" for this session only, "program" to also change future sessions.' },
         reason: { type: 'string', description: 'One short sentence shown to the user.' },
       },
@@ -84,7 +105,7 @@ export const TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        exercise_id: exerciseEnum,
+        exercise_id: exerciseId,
         sets: { type: 'integer' },
         reps: { type: 'integer' },
         rest_seconds: { type: 'integer' },
@@ -102,7 +123,7 @@ export const TOOLS = [
       type: 'object',
       properties: {
         slot_id: { type: 'string' },
-        new_exercise_id: exerciseEnum,
+        new_exercise_id: exerciseId,
         reason: { type: 'string' },
       },
       required: ['slot_id', 'new_exercise_id', 'reason'],
@@ -133,7 +154,7 @@ export const TOOLS = [
       properties: {
         kind: { type: 'string', enum: ['joint', 'avoid', 'prefer', 'dislike', 'note'] },
         joint: { type: 'string', enum: ['', ...JOINTS], description: 'For kind=joint: which joint. Empty string otherwise.' },
-        exercise_id: { type: 'string', enum: ['', ...EXERCISE_IDS], description: 'For avoid/prefer/dislike: the catalog exercise. Empty string otherwise.' },
+        exercise_id: { type: 'string', description: 'For avoid/prefer/dislike: the catalog exercise id. Empty string otherwise.' },
         severity: { type: 'integer', description: '1 = mild, 2 = moderate, 3 = severe/injury.' },
         note: { type: 'string', description: 'One short sentence in the user\'s terms, e.g. "Outer right elbow aches on straight-bar pressing".' },
         expires_in_days: { type: 'integer', description: 'How long this is likely relevant: e.g. 14 for a minor tweak, 0 for permanent/ongoing.' },
@@ -196,7 +217,7 @@ export async function buildContext(db: Db, workout: LoadedWorkout | null, today:
     if (w.notes) lines.push(`Workout notes: ${w.notes}`);
   }
   const recent = must(await db.from('workouts').select('id').eq('status', 'completed')
-    .order('date', { ascending: false }).order('id', { ascending: false }).limit(6)) as Array<{ id: number }>;
+    .order('date', { ascending: false }).order('id', { ascending: false }).limit(RECENT_SESSIONS)) as Array<{ id: number }>;
   if (recent.length) {
     lines.push('', 'Recent sessions (top working sets):');
     for (const r of recent) {
@@ -302,9 +323,31 @@ export async function toAction(db: Db, workout: LoadedWorkout | null, name: stri
 // ---------------------------------------------------------------------------
 // Conversation
 
+export interface CoachUsage extends UsageTotals { model: string; effort: 'low' | 'medium'; costUsd: number; budgetUsd: number; monthSpentUsd: number }
+
 export interface MessageRow {
   id: number; workout_id: number | null; role: 'user' | 'assistant'; content: string;
   actions: CoachAction[]; sources: Array<{ url: string; title: string }>; created_at: string;
+  usage: CoachUsage | null; cost_usd: number | null;
+}
+
+export class BudgetExceededError extends Error {
+  constructor(public spent: number, public budget: number) {
+    super(`You've used your AI coach budget for this month ($${spent.toFixed(2)} of $${budget.toFixed(2)}). It resets on the 1st.`);
+  }
+}
+
+/** Questions about pain or injury, or explicit research requests, get deeper thinking; everything else is quick. */
+const NEEDS_DEPTH = /\b(pain|hurt|hurts|injur|sore|ache|aching|tweak|strain|sprain|numb|tingl|swell|swollen|pop(ped)?|doctor|physio|surgery|tendon|tendin|research|study|studies|evidence)/i;
+export function chooseEffort(text: string, research: boolean): 'low' | 'medium' {
+  return research || NEEDS_DEPTH.test(text) ? 'medium' : 'low';
+}
+
+/** What this user has spent on the coach since the start of the month (UTC). */
+export async function monthSpend(db: Db, now = new Date()): Promise<number> {
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+  const rows = must(await db.from('coach_messages').select('cost_usd').eq('role', 'assistant').gte('created_at', start)) as Array<{ cost_usd: number | null }>;
+  return rows.reduce((a, r) => a + (r.cost_usd ?? 0), 0);
 }
 
 // deno-lint-ignore no-explicit-any
@@ -316,10 +359,20 @@ type AnthropicLike = any;
  */
 export async function runCoach(opts: {
   db: Db; anthropic: AnthropicLike; model?: string; workoutId: number | null; text: string; today?: string;
+  /** The user tapped "Research": search the web and think harder. */
+  research?: boolean;
+  /** Monthly cap in USD (0 = none). */
+  budgetUsd?: number;
 }): Promise<MessageRow> {
   const { db, anthropic, workoutId, text } = opts;
   const model = opts.model || DEFAULT_MODEL;
   const today = opts.today ?? new Date().toISOString().slice(0, 10);
+  const budget = opts.budgetUsd ?? DEFAULT_MONTHLY_BUDGET_USD;
+  const spent = await monthSpend(db);
+  if (budget > 0 && spent >= budget) throw new BudgetExceededError(spent, budget);
+  const effort = chooseEffort(text, !!opts.research);
+  const profile = await loadProfile(db);
+  const system = buildSystem(profile.equipment);
 
   // In-workout chats act on that workout; the general chat can act on whatever workout is in progress.
   let targetId = workoutId;
@@ -341,7 +394,7 @@ export async function runCoach(opts: {
     role: 'user',
     content: [
       { type: 'text', text: `<context>\n${await buildContext(db, workout, today)}\n</context>` },
-      { type: 'text', text },
+      { type: 'text', text: opts.research ? `${text}\n\n(Research requested: please search for supporting evidence.)` : text },
     ],
   });
 
@@ -350,18 +403,23 @@ export async function runCoach(opts: {
   const actions: CoachAction[] = [];
   const texts: string[] = [];
   const sources = new Map<string, string>();
+  const usage = emptyUsage();
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     const msg = await anthropic.beta.messages.stream({
       model,
-      max_tokens: 16000,
-      system: [{ type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } }],
+      max_tokens: 8000,
+      // Breakpoint 1: tools + system (stable per user). Top-level cache_control adds a moving
+      // breakpoint at the end of the conversation, so tool-call rounds and follow-ups reuse it.
+      system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
+      cache_control: { type: 'ephemeral' },
       tools: TOOLS,
       messages,
-      output_config: { effort: 'medium' },
+      output_config: { effort },
       betas: ['server-side-fallback-2026-07-01'],
       fallbacks: 'default',
     }).finalMessage();
+    addUsage(usage, msg.usage);
 
     if (msg.stop_reason === 'refusal') {
       texts.push('Sorry — I can\'t help with that request.');
@@ -398,8 +456,11 @@ export async function runCoach(opts: {
   }
 
   const content = texts.join('\n\n').trim() || (actions.length ? 'Here are some changes you can apply:' : 'I don\'t have a suggestion for that.');
+  const cost = costUsd(model, usage);
+  const record: CoachUsage = { ...usage, model, effort, costUsd: cost, budgetUsd: budget, monthSpentUsd: Math.round((spent + cost) * 10_000) / 10_000 };
   return must(await db.from('coach_messages').insert({
     workout_id: workoutId, role: 'assistant', content, actions,
     sources: [...sources.entries()].map(([url, title]) => ({ url, title })),
+    usage: record, cost_usd: cost,
   }).select('*').single()) as MessageRow;
 }

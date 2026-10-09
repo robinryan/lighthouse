@@ -83,7 +83,15 @@ If you ever want direct control over the database (SQL editor, backups, monitori
 - Lives in every workout and has its own tab. It sees your profile, program, today's workout and recent sessions, and can search the web, citing its sources.
 - Proposes changes as one-tap **Apply** buttons: swap an exercise, lighten the remaining sets, add stretches or rehab drills, change a program slot, or record a joint to protect. Nothing changes until you tap Apply.
 - It isn't medical advice. It tells you to stop and see a professional for sharp pain, swelling or numbness.
-- Runs Claude Opus 5.5 at medium effort, with server-side refusal fallbacks enabled and web search capped at 5 searches per message.
+- Runs Claude Opus 5.5, with server-side refusal fallbacks enabled.
+
+**AI cost controls** (only the coach uses AI; everything else is rule-based and free to run)
+- **Usage tracking:** every reply stores its token counts, web searches, model, effort and estimated cost. Settings shows this month's total against a **monthly budget**: $10 per user by default, changed with the `COACH_MONTHLY_BUDGET_USD` secret, 0 for no cap. Once you reach it, the coach pauses until the 1st without calling the API.
+- **Smaller prompt:** the exercise list is filtered to your equipment and sent once rather than repeated in every tool definition. The fixed prompt went from about 6,200 tokens to about 3,600.
+- **Two-level caching:** one cache for the instructions and tools, and a moving one at the end of the conversation, so follow-ups and tool-call rounds reuse what's already been sent.
+- **Leaner context:** the last 10 chat messages and last 3 sessions.
+- **Web search on request:** tap 🔎 Research to search. It's capped at 2 searches per message and limited to reputable sources (PubMed, BJSM, JOSPT, Physiopedia, AAOS, Mayo Clinic, NHS, ACSM, NSCA, Stronger By Science, and others).
+- **Effort by question type:** quick questions get *low* effort; pain, injury or research questions get *medium*.
 
 ## Development
 

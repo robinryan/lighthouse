@@ -7,7 +7,10 @@ import {
 import type { CoachMessage } from './types';
 
 function toMessage(r: MessageRow): CoachMessage {
-  return { id: r.id, role: r.role, content: r.content, createdAt: r.created_at, actions: r.actions ?? [], sources: r.sources ?? [] };
+  return {
+    id: r.id, role: r.role, content: r.content, createdAt: r.created_at, actions: r.actions ?? [], sources: r.sources ?? [],
+    costUsd: r.cost_usd ?? null, effort: r.usage?.effort ?? null, webSearches: r.usage?.webSearches ?? 0,
+  };
 }
 
 export async function listMessages(workoutId: number | null): Promise<CoachMessage[]> {
@@ -19,8 +22,8 @@ export async function listMessages(workoutId: number | null): Promise<CoachMessa
 /** Thrown when the coach edge function isn't deployed or has no API key yet. */
 export class CoachNotConfiguredError extends Error {}
 
-export async function askCoach(workoutId: number | null, text: string): Promise<CoachMessage> {
-  const { data, error } = await db().functions.invoke('coach', { body: { workoutId, text } });
+export async function askCoach(workoutId: number | null, text: string, research = false): Promise<CoachMessage> {
+  const { data, error } = await db().functions.invoke('coach', { body: { workoutId, text, research } });
   if (error) {
     // supabase-js wraps non-2xx responses; pull out the function's own message when there is one.
     const ctx = (error as { context?: Response }).context;
@@ -80,4 +83,20 @@ export async function applyAction(messageId: number, index: number, dismiss: boo
   a.status = dismiss ? 'dismissed' : 'applied';
   must(await db().from('coach_messages').update({ actions }).eq('id', messageId));
   return a;
+}
+
+export interface CoachMonthUsage { spentUsd: number; messages: number; budgetUsd: number | null; webSearches: number; avgUsd: number }
+
+/** This month's coach spending (UTC month), from the usage stored with each reply. */
+export async function coachUsageThisMonth(): Promise<CoachMonthUsage> {
+  const now = new Date();
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+  const rows = must(await db().from('coach_messages').select('cost_usd, usage, created_at').eq('role', 'assistant')
+    .gte('created_at', start).order('created_at', { ascending: false })) as Array<{ cost_usd: number | null; usage: MessageRow['usage'] }>;
+  const spentUsd = rows.reduce((a, r) => a + (r.cost_usd ?? 0), 0);
+  return {
+    spentUsd, messages: rows.length, budgetUsd: rows.find((r) => r.usage)?.usage?.budgetUsd ?? null,
+    webSearches: rows.reduce((a, r) => a + (r.usage?.webSearches ?? 0), 0),
+    avgUsd: rows.length ? spentUsd / rows.length : 0,
+  };
 }

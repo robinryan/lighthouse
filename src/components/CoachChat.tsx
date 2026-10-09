@@ -34,6 +34,7 @@ export function CoachChat({ workoutId, suggestions, onApplied, initialPrompt }: 
   const [notConfigured, setNotConfigured] = useState<string | null>(null);
   const [text, setText] = useState(initialPrompt ?? '');
   const [sending, setSending] = useState(false);
+  const [research, setResearch] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const online = useOnline();
@@ -46,10 +47,11 @@ export function CoachChat({ workoutId, suggestions, onApplied, initialPrompt }: 
     setSending(true);
     setError(null);
     setText('');
-    const optimistic: CoachMessage = { id: -Date.now(), role: 'user', content: body, createdAt: '', actions: [], sources: [] };
+    const optimistic: CoachMessage = { id: -Date.now(), role: 'user', content: body, createdAt: '', actions: [], sources: [], costUsd: null, effort: null, webSearches: 0 };
     setData({ ...data, messages: [...data.messages, optimistic] });
     try {
-      await askCoach(workoutId, body);
+      await askCoach(workoutId, body, research);
+      setResearch(false);
       await reload();
     } catch (e) {
       if (e instanceof CoachNotConfiguredError) setNotConfigured(e.message);
@@ -109,6 +111,11 @@ export function CoachChat({ workoutId, suggestions, onApplied, initialPrompt }: 
                 </div>
               </div>
             ))}
+            {m.role === 'assistant' && m.costUsd != null && (
+              <div className="tiny muted" style={{ marginTop: 4 }}>
+                ≈ ${m.costUsd < 0.01 ? '<0.01' : m.costUsd.toFixed(2)}{m.effort === 'low' ? ' · quick answer' : ''}{m.webSearches ? ` · ${m.webSearches} search${m.webSearches > 1 ? 'es' : ''}` : ''}
+              </div>
+            )}
             {m.sources.length > 0 && (
               <div className="sources">
                 <div className="muted">Sources</div>
@@ -120,7 +127,7 @@ export function CoachChat({ workoutId, suggestions, onApplied, initialPrompt }: 
         {sending && (
           <div className="bubble assistant">
             <div className="typing"><span /><span /><span /></div>
-            <div className="tiny muted" style={{ marginTop: 4 }}>Thinking — may search the web, can take ~30s</div>
+            <div className="tiny muted" style={{ marginTop: 4 }}>{research ? 'Researching — can take ~30s' : 'Thinking…'}</div>
           </div>
         )}
         <div ref={endRef} />
@@ -137,6 +144,13 @@ export function CoachChat({ workoutId, suggestions, onApplied, initialPrompt }: 
           {suggestions.map((s) => <button key={s} className="chip" onClick={() => send(s)}>{s}</button>)}
         </div>
       )}
+      <div className="row" style={{ gap: 6 }}>
+        <button type="button" className={`chip ${research ? 'on' : ''}`} onClick={() => setResearch((v) => !v)} aria-pressed={research}
+          title="Search reputable sources for evidence (slower, costs a little more)">
+          🔎 Research{research ? ' on' : ''}
+        </button>
+        <span className="tiny muted">{research ? 'Will search studies & clinical sources' : 'Answers from training knowledge'}</span>
+      </div>
       <form className="composer" onSubmit={(e) => { e.preventDefault(); void send(text); }}>
         <textarea
           rows={1}
