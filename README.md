@@ -9,7 +9,7 @@ It's an installable Progressive Web App (works offline at the gym) built with Re
 The app uses Bolt's built-in database (Bolt Database), so you don't need a separate database account. Bolt Database is Supabase-based, which is why the code talks to it with the Supabase client.
 
 1. **Import** the repo into bolt.new from GitHub. The app code is on `master`.
-2. **Create the database tables.** Bolt sets up a database for the project and fills in `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`. Then, in Bolt's chat, ask: *"Apply the database migrations in `supabase/migrations/` to the Bolt database, in order."* Bolt has already applied the first file; also apply `20261010000000_skips_and_health.sql` and `20261011000000_stretches.sql` if Bolt hasn't yet. You can check it worked from the database icon at the top centre of the project.
+2. **Create the database tables.** Bolt sets up a database for the project and fills in `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`. Then, in Bolt's chat, ask: *"Apply the database migrations in `supabase/migrations/` to the Bolt database, in order."* Bolt names the files it has applied with its own timestamp prefix; all three are applied. You can check it worked from the database icon at the top centre of the project.
 3. **Publish.** The build is `npm run build` and the output is `dist/`; `netlify.toml` already says so. At this point everything works except the coach.
 4. **Turn on the AI coach** (optional):
    - **Deploy the server function.** Ask Bolt: *"Deploy the `coach` edge function in `supabase/functions/coach`."*
