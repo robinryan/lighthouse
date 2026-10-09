@@ -6,18 +6,19 @@ It's an installable Progressive Web App (works offline at the gym) built with Re
 
 ## Setting it up in Bolt
 
-1. **Import** the repo into bolt.new. The app code must be on the default branch (`master`).
-2. **Connect Supabase.** Click **Supabase** in Bolt's top bar and connect or create a project. Bolt fills in `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` and applies the database migration in `supabase/migrations/`. If Bolt doesn't apply it, open the Supabase dashboard → **SQL Editor**, paste in the migration file and run it.
+The app uses Bolt's built-in database (Bolt Database), so you don't need a separate database account. Bolt Database is Supabase-based, which is why the code talks to it with the Supabase client.
+
+1. **Import** the repo into bolt.new from GitHub. The app code is on `master`.
+2. **Create the database tables.** Bolt sets up a database for the project and fills in `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`. Then, in Bolt's chat, ask: *"Apply the database migration in `supabase/migrations/` to the Bolt database."* You can check it worked from the database icon at the top centre of the project.
 3. **Publish.** The build is `npm run build` and the output is `dist/`; `netlify.toml` already says so. At this point everything works except the coach.
 4. **Turn on the AI coach** (optional):
-   - **Deploy the edge function.** Ask Bolt to "deploy the `coach` Supabase edge function in `supabase/functions/coach`". Or, with the Supabase CLI: `supabase functions deploy coach`.
-   - **Add your Anthropic key as a secret.** In the Supabase dashboard, go to **Edge Functions → Secrets** and add `ANTHROPIC_API_KEY`. You can also add `COACH_MODEL` to override the default model, `claude-opus-5-5`.
-5. **Supabase auth settings** (Authentication in the Supabase dashboard):
-   - **URL Configuration:** set **Site URL** to your published URL, so confirmation and password-reset emails link back to the app.
-   - **Email confirmation:** on by default, so new accounts must click the emailed link before signing in.
-   - **Closing sign-ups:** while the app is just for you, create your account, then turn off **Allow new users to sign up**.
+   - **Deploy the server function.** Ask Bolt: *"Deploy the `coach` edge function in `supabase/functions/coach`."*
+   - **Add your Anthropic key.** Open the database icon, go to the secrets settings, and add a secret named `ANTHROPIC_API_KEY`. You can also add `COACH_MODEL` to override the default model, `claude-opus-5-5`.
+5. **Accounts:** sign-up and sign-in use the database's built-in authentication. New accounts may need to confirm their email address first. If confirmation emails link to the wrong address, set the site URL in the database's authentication settings to your published URL.
 
 To install the app on your phone, open the published site and choose **Share → Add to Home Screen** (iOS) or **Install app** (Android).
+
+If you ever want direct control over the database (SQL editor, backups, monitoring), Bolt lets you claim it into your own Supabase account without changing any code.
 
 ## Features
 

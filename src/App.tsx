@@ -51,8 +51,8 @@ export function App() {
   if (!isConfigured()) {
     return (
       <main className="app"><div className="card stack" style={{ marginTop: '20vh' }}>
-        <h2>Connect Supabase</h2>
-        <p className="muted">This app stores its data in Supabase. Set <code>VITE_SUPABASE_URL</code> and <code>VITE_SUPABASE_ANON_KEY</code> (in Bolt: click <b>Supabase</b> in the top bar and connect a project), then reload.</p>
+        <h2>Database not connected</h2>
+        <p className="muted">The app can't find its database settings (<code>VITE_SUPABASE_URL</code> and <code>VITE_SUPABASE_ANON_KEY</code>). In Bolt, open the database icon at the top of the project to create or connect the project's database, then reload.</p>
       </div></main>
     );
   }
