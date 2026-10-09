@@ -31,6 +31,7 @@ export interface Exercise {
 export interface SetDTO {
   id: number; position: number; kind: 'warmup' | 'working'; targetReps: number | null; targetWeight: number | null;
   amrap: boolean; actualReps: number | null; actualWeight: number | null; rpe: number | null; done: boolean;
+  skipped: boolean; skipReason: string | null;
 }
 
 export interface WorkoutExercise {
@@ -38,6 +39,7 @@ export interface WorkoutExercise {
   restSeconds: number; notes: string; engineNote: string | null; substitutedFrom: string | null; loadType: LoadType;
   perHand: boolean; equipment: Equipment[]; cues: string; muscles: string[];
   previous: Array<{ reps: number | null; weight: number | null }>; bestE1rm: number; sets: SetDTO[];
+  tips: string[]; videoUrl: string; skipped: boolean; skipReason: string | null;
 }
 
 export interface FinishSummary {

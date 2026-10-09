@@ -219,3 +219,16 @@ label.field > span { font-weight: 600; }
 }
 .with-timer .fab { bottom: calc(var(--tabbar-h) + var(--safe-bottom) + 92px); }
 .offline-pill { position: fixed; top: calc(env(safe-area-inset-top, 0px) + 8px); left: 50%; transform: translateX(-50%); z-index: 50; background: var(--warn); color: #241500; font-size: 12px; font-weight: 700; padding: 4px 10px; border-radius: 999px; }
+
+/* Exercise links, form tips, skipping, suggestions */
+.ex-link { color: inherit; text-decoration: none; display: inline-flex; align-items: center; gap: 5px; }
+.ex-link svg { color: var(--accent); flex: none; }
+.ex-link:hover, .ex-link:focus-visible { text-decoration: underline; text-decoration-color: var(--accent); }
+.tips { margin: 2px 0 0; padding-left: 18px; font-size: 13px; color: var(--muted); }
+.tips li { margin: 2px 0; }
+.skipped-card { opacity: 0.75; }
+.set-table tr.skipped td { background: var(--surface-2); }
+.set-table tr.skipped td:first-child { border-radius: 10px 0 0 10px; }
+.set-table tr.skipped td:last-child { border-radius: 0 10px 10px 0; }
+.rank { width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); font-size: 12px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center; flex: none; }
+.health-sev { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }

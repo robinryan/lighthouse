@@ -7,6 +7,7 @@
 
 import { EXERCISES, EXERCISE_IDS, EXERCISE_MAP, JOINTS, type Joint } from './exercises.ts';
 import { type Db, type LoadedWorkout, loadProfile, loadProgram, loadWorkout, must } from './queries.ts';
+import { type HealthNote, describeHealth, describeSkip, parseSkip, summarizeHealth } from './health.ts';
 
 export const DEFAULT_MODEL = 'claude-opus-5-5';
 const MAX_HISTORY = 20;
@@ -33,6 +34,8 @@ Your job:
 - Only recommend exercises by catalog id via the tools; you may mention others in text but tools must use catalog ids.
 - Use propose_program_change only when a change should stick across future sessions (e.g. a recurring problem). Use propose_swap with scope "today" for one-off issues.
 - Use propose_limitations when the user reveals an ongoing joint issue so future programs avoid aggravating it.
+- Health profile: whenever the user tells you something lasting about their body or preferences (a sore or injured joint, an exercise that hurts, one that feels great, one they dislike, relevant history like surgery or a desk job), call record_health_note right away — it saves immediately and the user can undo it. Don't record trivia or repeat what's already in the profile. Respect the profile in every recommendation: never suggest exercises listed under "Avoid", and favour ones that are easy on sensitive joints.
+- When the user skipped an exercise or sets (shown in context with the reason), take that reason into account.
 - Weights are in the user's units. Never claim you changed anything — you propose; the user applies.
 
 Exercise catalog (id | name | category | equipment | muscles | joints it stresses):
@@ -120,15 +123,34 @@ export const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'record_health_note',
+    description: 'Save an observation to the user\'s health profile immediately (the user can undo). Use for lasting information: a sensitive joint, an exercise to avoid or that works well, one they dislike, or relevant health context.',
+    strict: true,
+    input_schema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['joint', 'avoid', 'prefer', 'dislike', 'note'] },
+        joint: { type: 'string', enum: ['', ...JOINTS], description: 'For kind=joint: which joint. Empty string otherwise.' },
+        exercise_id: { type: 'string', enum: ['', ...EXERCISE_IDS], description: 'For avoid/prefer/dislike: the catalog exercise. Empty string otherwise.' },
+        severity: { type: 'integer', description: '1 = mild, 2 = moderate, 3 = severe/injury.' },
+        note: { type: 'string', description: 'One short sentence in the user\'s terms, e.g. "Outer right elbow aches on straight-bar pressing".' },
+        expires_in_days: { type: 'integer', description: 'How long this is likely relevant: e.g. 14 for a minor tweak, 0 for permanent/ongoing.' },
+      },
+      required: ['kind', 'joint', 'exercise_id', 'severity', 'note', 'expires_in_days'],
+      additionalProperties: false,
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------
 // Context
 
-type SetLike = { kind: string; target_reps: number | null; target_weight: number | null; actual_reps: number | null; actual_weight: number | null; done: boolean; amrap: boolean };
+type SetLike = { kind: string; target_reps: number | null; target_weight: number | null; actual_reps: number | null; actual_weight: number | null; done: boolean; amrap: boolean; skipped?: boolean };
 
 function fmtSet(s: SetLike) {
   const w = s.kind === 'warmup' ? 'w ' : '';
+  if (s.skipped) return `${w}skipped`;
   if (s.done) return `${w}${s.actual_weight ?? 'BW'}×${s.actual_reps} ✓`;
   return `${w}${s.target_weight ?? 'BW'}×${s.target_reps ?? '?'}${s.amrap ? '+' : ''} (not done)`;
 }
@@ -149,12 +171,25 @@ export async function buildContext(db: Db, workout: LoadedWorkout | null, today:
         d.slots.map((s) => `${s.id} [${s.tier}] ${s.exerciseId}`).join('; '));
     });
   }
+  const healthNotes = must(await db.from('health_notes').select('*').order('created_at', { ascending: false }).limit(200)) as HealthNote[];
+  const health = describeHealth(summarizeHealth(healthNotes, p.limitations));
+  lines.push('', 'Health profile:', ...(health.length ? health : ['(nothing recorded yet)']));
   if (workout) {
     const w = workout.workout;
     lines.push('', `Current workout (${w.status}): "${w.title}" on ${w.date}`);
     for (const e of workout.exercises) {
+      const skip = parseSkip(e.skip_reason);
+      if (e.skipped) {
+        lines.push(`- workout_exercise_id=${e.id} ${exName(e.exercise_id)} (${e.exercise_id}) SKIPPED${skip ? `: ${describeSkip(skip)}` : ''}`);
+        continue;
+      }
       lines.push(`- workout_exercise_id=${e.id} ${exName(e.exercise_id)} (${e.exercise_id}) [${e.tier} ${e.scheme_label}]: ` +
         e.sets.map(fmtSet).join(', ') + (e.notes ? ` — note: ${e.notes}` : ''));
+      const skippedSets = e.sets.filter((x) => x.skipped);
+      if (skippedSets.length) {
+        const why = parseSkip(skippedSets[skippedSets.length - 1].skip_reason);
+        lines.push(`  (${skippedSets.length} set(s) skipped${why ? `: ${describeSkip(why)}` : ''})`);
+      }
     }
     if (w.notes) lines.push(`Workout notes: ${w.notes}`);
   }
@@ -184,7 +219,9 @@ export type CoachAction =
   | { type: 'load'; workoutExerciseId: number; percent: number; reason: string; label: string; status: ActionStatus }
   | { type: 'add'; workoutId: number; exerciseId: string; sets: number; reps: number; restSeconds: number; note: string; label: string; status: ActionStatus }
   | { type: 'program'; slotId: string; exerciseId: string; reason: string; label: string; status: ActionStatus }
-  | { type: 'limitations'; add: Joint[]; remove: Joint[]; note: string; label: string; status: ActionStatus };
+  | { type: 'limitations'; add: Joint[]; remove: Joint[]; note: string; label: string; status: ActionStatus }
+  /** Already saved when created; "dismissing" it undoes the save. */
+  | { type: 'health'; noteId: number; label: string; note: string; status: ActionStatus };
 
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, Math.round(Number.isFinite(n) ? n : 0)));
 
@@ -236,6 +273,24 @@ export async function toAction(db: Db, workout: LoadedWorkout | null, name: stri
       const parts = [add.length ? `protect ${add.join(', ')}` : '', remove.length ? `stop protecting ${remove.join(', ')}` : '']
         .filter(Boolean).join('; ');
       return { type: 'limitations', add, remove, note: str('note'), status: 'pending', label: `Profile: ${parts || 'save injury note'}` };
+    }
+    case 'record_health_note': {
+      const kind = str('kind') as HealthNote['kind'];
+      if (!['joint', 'avoid', 'prefer', 'dislike', 'note'].includes(kind)) throw new Error('Invalid kind');
+      const joint = str('joint') as Joint | '';
+      const exerciseId = str('exercise_id');
+      if (kind === 'joint' && !JOINTS.includes(joint as Joint)) throw new Error('kind=joint needs a joint');
+      if (['avoid', 'prefer', 'dislike'].includes(kind)) needExercise(exerciseId);
+      const days = clamp(num('expires_in_days'), 0, 365);
+      const note = str('note').slice(0, 300);
+      const row = must(await db.from('health_notes').insert({
+        kind, joint: kind === 'joint' ? joint : null, exercise_id: exerciseId || null,
+        severity: clamp(num('severity'), 1, 3), note, source: 'coach', workout_id: workout?.workout.id ?? null,
+        expires_at: days ? new Date(Date.now() + days * 86_400_000).toISOString() : null,
+      }).select('id').single()) as { id: number };
+      const what = kind === 'joint' ? `sensitive ${joint}` : kind === 'note' ? 'note'
+        : `${kind === 'avoid' ? 'avoid' : kind === 'prefer' ? 'works well' : 'dislikes'}: ${exName(exerciseId)}`;
+      return { type: 'health', noteId: row.id, note, status: 'applied', label: `Saved to health profile — ${what}` };
     }
     default:
       throw new Error(`Unknown tool ${name}`);
@@ -330,7 +385,9 @@ export async function runCoach(opts: {
       try {
         const action = await toAction(db, workout, block.name, block.input as Record<string, unknown>);
         actions.push(action);
-        results.push({ type: 'tool_result', tool_use_id: block.id, content: `Shown to the user as a button: "${action.label}". Not applied yet.` });
+        results.push({ type: 'tool_result', tool_use_id: block.id, content: action.type === 'health'
+          ? 'Saved to the health profile (the user can undo).'
+          : `Shown to the user as a button: "${action.label}". Not applied yet.` });
       } catch (err) {
         results.push({ type: 'tool_result', tool_use_id: block.id, is_error: true, content: (err as Error).message });
       }

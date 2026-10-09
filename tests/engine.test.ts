@@ -130,3 +130,13 @@ test('warmups for light weights skip anything at or above working weight', () =>
   assert.equal(e1rm(100, 1), 100);
   assert.ok(Math.abs(e1rm(100, 5) - 116.67) < 0.01);
 });
+
+test('skipped sets hold the prescription instead of counting as a failure', () => {
+  const s = initialState(squat, 'T1', profile, { squat: 100 });
+  const p = prescribe(s, squat, 'strength', 'kg', '2026-10-09');
+  const sets = perform(p, (t) => t).map((x, i, all) => (i === all.length - 1 ? { ...x, done: false, actualReps: null, skipped: true } : x));
+  const r = evaluate(s, squat, sets, 'strength', 'kg', 'beginner', '2026-10-09');
+  assert.equal(r.outcome, 'repeat');
+  assert.equal(r.state.stage, 0);
+  assert.equal(r.state.weight, 85);
+});

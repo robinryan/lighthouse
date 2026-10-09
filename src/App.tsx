@@ -12,6 +12,7 @@ import { ExerciseProgressPage, ProgressPage } from './pages/Progress';
 import { ProgramPage } from './pages/Program';
 import { CoachPage } from './pages/Coach';
 import { SettingsPage } from './pages/Settings';
+import { HealthPage } from './pages/Health';
 
 const Icon = ({ d }: { d: string }) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d={d} /></svg>
@@ -123,6 +124,7 @@ function SignedInApp() {
             <Route path="/program" element={<ProgramPage />} />
             <Route path="/coach" element={<CoachPage />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/health" element={<HealthPage />} />
             <Route path="/setup" element={<SetupPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

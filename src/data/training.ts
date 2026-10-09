@@ -2,6 +2,7 @@
 // scopes every query to the signed-in user.
 
 import { EXERCISE_MAP, getExercise } from '../../supabase/functions/_shared/exercises.ts';
+import { EXERCISE_TIPS, videoUrl } from '../../supabase/functions/_shared/exerciseTips.ts';
 import {
   type FiveRMs, type LiftState, type PerformedSet, type Tier, type Units,
   convertState, convertWeight, e1rm, evaluate, generateProgram, initialState, prescribe, roundWeight,
@@ -73,7 +74,13 @@ export async function saveProgram(sp: StoredProgram) {
 export async function regenerateProgram() {
   const profile = await getProfile();
   const existing = await getProgram();
-  await saveProgram({ program: generateProgram(profile), nextDay: existing?.nextDay ?? 0, fiveRMs: existing?.fiveRMs ?? {} });
+  // Fold the health profile in: strongly sensitive joints count as limitations, and avoided exercises are steered around.
+  const { getHealthSummary } = await import('./health');
+  const health = await getHealthSummary(profile);
+  const limitations = [...new Set([...profile.limitations,
+    ...(Object.entries(health.joints) as Array<[typeof profile.limitations[number], number]>).filter(([, s]) => s >= 2).map(([j]) => j)])];
+  const avoid = new Set([...health.avoid.keys(), ...health.dislike]);
+  await saveProgram({ program: generateProgram({ ...profile, limitations }, avoid), nextDay: existing?.nextDay ?? 0, fiveRMs: existing?.fiveRMs ?? {} });
 }
 
 export async function setSlotExercise(slotId: string, exerciseId: string) {
@@ -227,6 +234,7 @@ function toDTOSet(s: SetRow) {
   return {
     id: s.id, position: s.position, kind: s.kind, targetReps: s.target_reps, targetWeight: s.target_weight,
     amrap: s.amrap, actualReps: s.actual_reps, actualWeight: s.actual_weight, rpe: s.rpe, done: s.done,
+    skipped: !!s.skipped, skipReason: s.skip_reason ?? null,
   };
 }
 
@@ -253,6 +261,9 @@ export async function getWorkout(id: number): Promise<Workout> {
         previous: mine.filter((h) => h.workout_id === lastWorkout).map((h) => ({ reps: h.actual_reps, weight: h.actual_weight })),
         bestE1rm: mine.reduce((m, h) => Math.max(m, e1rm(h.actual_weight ?? 0, h.actual_reps ?? 0)), 0),
         sets: we.sets.map(toDTOSet),
+        tips: EXERCISE_TIPS[we.exercise_id] ?? [],
+        videoUrl: videoUrl(ex?.name ?? we.exercise_id),
+        skipped: !!we.skipped, skipReason: we.skip_reason ?? null,
       };
     }),
   };
@@ -383,7 +394,7 @@ export async function finishWorkout(workoutId: number): Promise<FinishSummary> {
   for (const we of dto.exercises) {
     const ex = getExercise(we.exerciseId);
     for (const s of we.sets) {
-      if (!s.done || s.kind !== 'working') continue;
+      if (!s.done || s.skipped || s.kind !== 'working') continue;
       summary.setsDone++;
       summary.volume += (s.actualWeight ?? 0) * (s.actualReps ?? 0);
     }
@@ -400,7 +411,7 @@ export async function finishWorkout(workoutId: number): Promise<FinishSummary> {
     evaluated.add(key);
     const performed: PerformedSet[] = we.sets.map((s) => ({
       kind: s.kind, targetReps: s.targetReps ?? 0, targetWeight: s.targetWeight,
-      actualReps: s.actualReps, actualWeight: s.actualWeight, done: s.done,
+      actualReps: s.actualReps, actualWeight: s.actualWeight, done: s.done && !s.skipped, skipped: s.skipped || we.skipped,
     }));
     const prev = await liftState(ctx, we.exerciseId, we.tier);
     const ev = evaluate(prev, ex, performed, profile.goal, profile.units, profile.experience, dto.date);

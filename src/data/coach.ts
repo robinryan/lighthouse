@@ -51,6 +51,14 @@ export async function applyAction(messageId: number, index: number, dismiss: boo
   const actions = row.actions;
   const a = actions[index];
   if (!a) throw new Error('Action not found');
+  if (a.type === 'health') {
+    // Saved automatically; dismissing means "undo".
+    if (!dismiss || a.status !== 'applied') throw new Error('Already saved');
+    must(await db().from('health_notes').delete().eq('id', a.noteId));
+    a.status = 'dismissed';
+    must(await db().from('coach_messages').update({ actions }).eq('id', messageId));
+    return a;
+  }
   if (a.status !== 'pending') throw new Error(`Already ${a.status}`);
   if (!dismiss) {
     switch (a.type) {

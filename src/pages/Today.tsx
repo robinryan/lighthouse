@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { getToday, localDate, startWorkout, summary } from '../api';
 import { useAsync, useSession } from '../hooks';
+import { ExerciseName } from '../components/ExerciseName';
 import { fmtDate, fmtNum } from '../format';
 
 export function TodayPage() {
@@ -68,7 +69,7 @@ export function TodayPage() {
             {preview.exercises.map((e) => (
               <div key={e.slotId} className="spread" style={{ padding: '7px 0', borderBottom: '1px solid var(--border)' }}>
                 <div className="grow">
-                  <div style={{ fontWeight: e.tier === 'T3' ? 500 : 700 }}>{e.name}</div>
+                  <ExerciseName name={e.name} style={{ fontWeight: e.tier === 'T3' ? 500 : 700 }} />
                   {e.note && <div className="tiny" style={{ color: 'var(--warn)' }}>{e.note}</div>}
                 </div>
                 <span className={`badge ${e.tier}`}>{e.tier === 'T3' ? 'ACC' : e.tier}</span>

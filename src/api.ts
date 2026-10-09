@@ -77,3 +77,10 @@ export async function flushOutbox(): Promise<number> {
   }
   return sent;
 }
+
+export {
+  listHealthNotes, addHealthNotes, removeHealthNote, getHealthSummary, skipExercise, unskipExercise, skipSet,
+  getAddSuggestions, getReplacementSuggestions, replaceSkipped, type HealthNote, type Suggestion,
+} from './data/health';
+export { SKIP_REASONS, JOINT_NAMES, describeSkip, parseSkip, type SkipFeedback, type SkipReason } from '../supabase/functions/_shared/health.ts';
+export { EXERCISE_TIPS, videoUrl } from '../supabase/functions/_shared/exerciseTips.ts';

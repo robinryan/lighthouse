@@ -222,3 +222,78 @@ test('coach core: proposals are validated, stored, and applied by the app', { sk
   setDb(asA);
   assert.equal((await listMessages(id)).length, 0);
 });
+
+test('skipping feeds the health profile, suggestions, progression and the coach', { skip: !ADMIN_URL && 'TEST_DATABASE_URL not set' }, async () => {
+  const H = await import('../src/data/health.ts');
+  const C = { id: '33333333-3333-4333-8333-333333333333', email: 'c@example.com' };
+  await pool.query(`INSERT INTO auth.users (id, email, raw_user_meta_data) VALUES ($1, $2, '{"name":"C"}')`, [C.id, C.email]);
+  const asC = fakeSupabase(pool, C);
+  setDb(asC);
+  await T.completeOnboarding(profile({ name: 'C' }), { squat: 100, bench: 70, deadlift: 120, ohp: 45 });
+  const id = await T.startWorkout({ date: '2026-10-09' });
+  let w = await T.getWorkout(id);
+  const bench = w.exercises.find((e) => e.exerciseId === 'bench')!;
+  assert.equal(bench.tips.length, 3);
+  assert.match(bench.videoUrl, /youtube\.com/);
+
+  // Skip bench for elbow pain → health profile learns it.
+  await H.skipExercise(bench.id, { reason: 'pain', joints: ['elbow'], note: 'outer elbow' });
+  const notes = await H.listHealthNotes();
+  assert.deepEqual(notes.map((n) => n.kind).sort(), ['avoid', 'joint']);
+  assert.equal(notes.find((n) => n.kind === 'avoid')!.exercise_id, 'bench');
+
+  // Replacements avoid the elbow and train the chest.
+  const repl = await H.getReplacementSuggestions(bench.id);
+  assert.ok(repl.length >= 3);
+  const { getExercise } = await import('../supabase/functions/_shared/exercises.ts');
+  for (const r of repl) assert.ok(!getExercise(r.exerciseId).stress.includes('elbow'), r.exerciseId);
+  await H.replaceSkipped(bench.id, repl[0].exerciseId);
+  w = await T.getWorkout(id);
+  const swapped = w.exercises.find((e) => e.exerciseId === repl[0].exerciseId)!;
+  assert.equal(swapped.substitutedFrom, 'bench');
+  assert.equal(swapped.skipped, false);
+
+  // Add-exercise suggestions skip what's already in the workout and avoided exercises.
+  const adds = await H.getAddSuggestions(id);
+  assert.ok(adds.length > 0);
+  assert.ok(!adds.some((a) => a.exerciseId === 'bench' || w.exercises.some((e) => e.exerciseId === a.exerciseId)));
+
+  // Skip the squat's last working set (equipment busy) → no failure on finish.
+  const squat = w.exercises.find((e) => e.exerciseId === 'squat')!;
+  const lastSet = squat.sets.filter((s) => s.kind === 'working').at(-1)!;
+  await H.skipSet(lastSet.id, { reason: 'equipment', joints: [], note: '' });
+  await completeAll(id, (tier, n) => (tier === 'T3' ? 15 : n));
+  w = await T.getWorkout(id);
+  assert.equal(w.exercises.find((e) => e.exerciseId === 'squat')!.sets.find((s) => s.id === lastSet.id)!.skipped, true);
+  // completeAll ticked every set, including the skipped one; skipping again keeps it skipped and not done.
+  await H.skipSet(lastSet.id, { reason: 'equipment', joints: [], note: '' });
+  const summary = await T.finishWorkout(id);
+  assert.equal(summary.results.find((r) => r.exerciseId === 'squat')!.outcome, 'repeat');
+
+  // Rebuilding the program steers around the avoided bench and the sensitive elbow.
+  await T.regenerateProgram();
+  const prog = await T.getProgram();
+  assert.notEqual(prog!.program.days[2].slots[0].exerciseId, 'bench');
+
+  // Coach: records a health note directly; undo removes it.
+  const script = [
+    { stop_reason: 'tool_use', content: [
+      { type: 'text', text: 'Noted — I\'ll keep that in mind.' },
+      { type: 'tool_use', id: 'h1', name: 'record_health_note', input: { kind: 'prefer', joint: '', exercise_id: 'neutral_db_press', severity: 1, note: 'Neutral grip pressing feels great', expires_in_days: 0 } },
+    ] },
+    { stop_reason: 'end_turn', content: [] },
+  ];
+  const requests: any[] = [];
+  const anthropic = { beta: { messages: { stream: (req: any) => { requests.push(structuredClone(req)); const m = script.shift(); return { finalMessage: async () => m }; } } } };
+  const reply = await runCoach({ db: asC, anthropic, workoutId: null, text: 'Neutral grip DB press feels great on my elbow', today: '2026-10-10' });
+  assert.match(requests[0].messages.at(-1).content[0].text, /Sensitive joints: elbows/);
+  assert.match(requests[0].messages.at(-1).content[0].text, /Avoid: Bench Press \[bench\]/);
+  assert.equal(reply.actions[0].type, 'health');
+  assert.ok((await H.listHealthNotes()).some((n) => n.kind === 'prefer' && n.exercise_id === 'neutral_db_press' && n.source === 'coach'));
+  await applyAction(reply.id, 0, true);
+  assert.ok(!(await H.listHealthNotes()).some((n) => n.kind === 'prefer'));
+
+  // Health notes are private.
+  setDb(asA);
+  assert.equal((await H.listHealthNotes()).length, 0);
+});

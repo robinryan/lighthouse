@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import {
   addExerciseToWorkout, addSet as addSetApi, deleteSet, discardWorkout, finishWorkout, flushOutbox, getWorkout, patchSet,
-  removeWorkoutExercise, swapExercise, updateWorkout, updateWorkoutExercise,
-  type SetDTO, type Units, type WorkoutExercise,
+  getAddSuggestions, parseSkip, describeSkip, removeWorkoutExercise, replaceSkipped, skipSet, swapExercise, unskipExercise,
+  updateWorkout, updateWorkoutExercise, type SetDTO, type Suggestion, type Units, type WorkoutExercise,
 } from '../api';
 import { useAsync, useOnline, useSession } from '../hooks';
 import { e1rm, fmtDuration, fmtNum } from '../format';
@@ -12,6 +12,8 @@ import { ExercisePicker } from '../components/ExercisePicker';
 import { PlateCalculator } from '../components/PlateCalculator';
 import { CoachChat } from '../components/CoachChat';
 import { Sheet } from '../components/Sheet';
+import { SkipSheet } from '../components/SkipSheet';
+import { ExerciseName, FormTips, tipsEnabled } from '../components/ExerciseName';
 
 const COACH_SUGGESTIONS = [
   'My elbow hurts today — what can I do instead?',
@@ -29,6 +31,8 @@ export function WorkoutPage() {
   const [now, setNow] = useState(Date.now());
   const [picker, setPicker] = useState(false);
   const [coachOpen, setCoachOpen] = useState(false);
+  const [coachPrompt, setCoachPrompt] = useState<string | undefined>();
+  const [suggestions, setSuggestions] = useState<Suggestion[] | null>(null);
   const [finishing, setFinishing] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const online = useOnline();
@@ -39,7 +43,7 @@ export function WorkoutPage() {
 
   const progress = useMemo(() => {
     if (!w) return { done: 0, total: 0 };
-    const sets = w.exercises.flatMap((e) => e.sets.filter((s) => s.kind === 'working'));
+    const sets = w.exercises.filter((e) => !e.skipped).flatMap((e) => e.sets.filter((s) => s.kind === 'working' && !s.skipped));
     return { done: sets.filter((s) => s.done).length, total: sets.length };
   }, [w]);
 
@@ -73,6 +77,12 @@ export function WorkoutPage() {
   }
 
   const elapsed = (now - Date.parse(w.startedAt)) / 1000;
+  const openCoach = (prompt?: string) => { setCoachPrompt(prompt); setCoachOpen(true); };
+  const openPicker = () => {
+    setSuggestions(null);
+    setPicker(true);
+    getAddSuggestions(w.id).then(setSuggestions).catch(() => setSuggestions([]));
+  };
 
   return (
     <div>
@@ -85,7 +95,7 @@ export function WorkoutPage() {
         </div>
         {!readOnly && (
           <div className="row">
-            <button className="btn icon" onClick={() => setCoachOpen(true)} aria-label="Ask the coach" title="Ask the coach">
+            <button className="btn icon" onClick={() => openCoach()} aria-label="Ask the coach" title="Ask the coach">
               <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z" /></svg>
             </button>
             <button className="btn primary" onClick={finish} disabled={finishing}>{finishing ? 'Saving…' : 'Finish'}</button>
@@ -101,13 +111,15 @@ export function WorkoutPage() {
           nextName={w.exercises[i + 1]?.name ?? null}
           onLocalChange={(fn) => updateExercise(ex.id, fn)}
           onReload={reload}
+          onAskCoach={openCoach}
+          workoutId={w.id}
         />
       ))}
 
       {!readOnly && (
         <div className="stack" style={{ marginTop: 16 }}>
-          <button className="btn block" onClick={() => setPicker(true)}>+ Add exercise</button>
-          <button className="btn block" onClick={() => setCoachOpen(true)}>Something hurts? Ask the coach</button>
+          <button className="btn block" onClick={openPicker}>+ Add exercise</button>
+          <button className="btn block" onClick={() => openCoach()}>Something hurts? Ask the coach</button>
           <label className="field"><span>Workout notes</span>
             <textarea
               defaultValue={w.notes}
@@ -122,6 +134,7 @@ export function WorkoutPage() {
       {picker && (
         <ExercisePicker
           title="Add exercise"
+          suggestions={suggestions ?? 'loading'}
           onClose={() => setPicker(false)}
           onPick={async (e) => {
             setPicker(false);
@@ -132,22 +145,24 @@ export function WorkoutPage() {
       )}
       {coachOpen && (
         <Sheet onClose={() => setCoachOpen(false)} tall title="Coach">
-          <CoachChat workoutId={w.id} suggestions={COACH_SUGGESTIONS} onApplied={reload} />
+          <CoachChat workoutId={w.id} suggestions={COACH_SUGGESTIONS} onApplied={reload} initialPrompt={coachPrompt} />
         </Sheet>
       )}
     </div>
   );
 }
 
-function ExerciseCard({ ex, units, readOnly, isLast, nextName, onLocalChange, onReload }: {
+function ExerciseCard({ ex, units, readOnly, isLast, nextName, onLocalChange, onReload, onAskCoach, workoutId }: {
   ex: WorkoutExercise; units: Units; readOnly: boolean; isLast: boolean; nextName: string | null;
   onLocalChange: (fn: (e: WorkoutExercise) => WorkoutExercise) => void; onReload: () => Promise<void>;
+  onAskCoach: (prompt?: string) => void; workoutId: number;
 }) {
   const timer = useRestTimer();
   const [menu, setMenu] = useState(false);
   const [swap, setSwap] = useState<null | 'pick' | { id: string; name: string }>(null);
   const [plates, setPlates] = useState<number | null>(null);
-  const [showCues, setShowCues] = useState(false);
+  const [skip, setSkip] = useState<null | { kind: 'exercise' } | { kind: 'set'; setId: number }>(null);
+  const [setOptions, setSetOptions] = useState<SetDTO | null>(null);
   const isBarbell = ex.equipment.includes('barbell');
   const working = ex.sets.filter((s) => s.kind === 'working');
   const weightHeader = ex.loadType === 'bodyweight' ? `+${units}` : ex.perHand ? `${units} ea` : units;
@@ -169,7 +184,7 @@ function ExerciseCard({ ex, units, readOnly, isLast, nextName, onLocalChange, on
     await patchSet(s.id, patch);
     if (done && prefs().autoStart) {
       const idx = ex.sets.findIndex((x) => x.id === s.id);
-      const next = ex.sets.slice(idx + 1).find((x) => !x.done);
+      const next = ex.sets.slice(idx + 1).find((x) => !x.done && !x.skipped);
       if (next || !isLast) {
         const rest = s.kind === 'warmup' ? Math.min(60, ex.restSeconds) : ex.restSeconds;
         const label = next
@@ -206,122 +221,193 @@ function ExerciseCard({ ex, units, readOnly, isLast, nextName, onLocalChange, on
 
   let workingNo = 0;
   const firstWorkWeight = working.find((s) => s.targetWeight)?.targetWeight ?? 0;
-
-  return (
-    <div className="card ex-card">
-      <div className="ex-head">
-        <div className="grow">
-          <div className="row wrap" style={{ gap: 6 }}>
-            <span className="ex-title">{ex.name}</span>
-            <span className={`badge ${ex.tier}`}>{ex.tier === 'T1' ? 'MAIN · HEAVY' : ex.tier === 'T2' ? 'MAIN · VOLUME' : 'ACCESSORY'}</span>
-          </div>
-          <div className="small muted">
-            {ex.schemeLabel}{ex.loadType !== 'time' && firstWorkWeight ? ` @ ${fmtNum(firstWorkWeight)} ${units}${ex.perHand ? ' each' : ''}` : ''}
-            {' · '}rest {fmtDuration(ex.restSeconds)}
-            {ex.substitutedFrom ? ' · swapped' : ''}
-          </div>
-        </div>
-        {!readOnly && <button className="btn icon ghost" onClick={() => setMenu(true)} aria-label="Exercise options">⋯</button>}
-      </div>
-      {ex.engineNote && <div className="notice" style={{ margin: '0 4px 8px' }}>{ex.engineNote}</div>}
-      {ex.notes && <div className="small" style={{ margin: '0 4px 8px' }}>📝 {ex.notes}</div>}
-      {showCues && <div className="small muted" style={{ margin: '0 4px 8px' }}>{ex.cues}</div>}
-
-      <table className="set-table">
-        <thead>
-          <tr>
-            <th>Set</th>
-            <th>Previous</th>
-            {ex.loadType !== 'time' && <th>{weightHeader}</th>}
-            <th>{repsHeader}</th>
-            <th aria-label="Done" />
-          </tr>
-        </thead>
-        <tbody>
-          {ex.sets.map((s) => {
-            const isWarm = s.kind === 'warmup';
-            const n = isWarm ? 0 : ++workingNo;
-            return (
-              <SetRow
-                key={s.id} s={s} n={n} ex={ex} readOnly={readOnly}
-                prev={isWarm ? null : ex.previous[n - 1] ?? null}
-                onToggle={toggle} onEdit={edit} onRemove={removeSet}
-              />
-            );
-          })}
-        </tbody>
-      </table>
-      {!readOnly && working.some((s) => s.amrap && s.done) && (
-        <div className="row small" style={{ padding: '4px 4px 0' }}>
-          <span className="muted">AMRAP effort (RPE):</span>
-          <select
-            style={{ width: 90, minHeight: 34, padding: '4px 8px' }}
-            value={working.find((s) => s.amrap)?.rpe ?? ''}
-            onChange={(e) => { const s = working.find((x) => x.amrap)!; void edit(s, 'rpe', e.target.value); }}
-          >
-            <option value="">—</option>
-            {[6, 7, 7.5, 8, 8.5, 9, 9.5, 10].map((r) => <option key={r} value={r}>{r}</option>)}
-          </select>
-        </div>
-      )}
-      {!readOnly && (
-        <div className="row" style={{ padding: '8px 4px 0' }}>
-          <button className="btn sm grow" onClick={() => void addSet('working')}>+ Add set</button>
-          {isBarbell && <button className="btn sm" onClick={() => setPlates(firstWorkWeight)}>Plates</button>}
-          <button className="btn sm" onClick={() => setShowCues((v) => !v)}>{showCues ? 'Hide tips' : 'Tips'}</button>
-        </div>
-      )}
-
-      {menu && (
-        <Sheet onClose={() => setMenu(false)} title={ex.name}>
-          <div className="stack">
-            <button className="btn block" onClick={() => { setMenu(false); setSwap('pick'); }}>Swap exercise</button>
-            <button className="btn block" onClick={() => { setMenu(false); void addSet('warmup'); }}>Add warm-up set</button>
-            {isBarbell && <button className="btn block" onClick={() => { setMenu(false); setPlates(firstWorkWeight); }}>Plate calculator</button>}
-            <div>
-              <div className="small muted" style={{ marginBottom: 6 }}>Rest timer</div>
-              <div className="chips">
-                {[45, 60, 90, 120, 180, 240, 300].map((r) => (
-                  <button key={r} className={`chip ${ex.restSeconds === r ? 'on' : ''}`} onClick={async () => {
-                    onLocalChange((e) => ({ ...e, restSeconds: r }));
-                    await updateWorkoutExercise(ex.id, { restSeconds: r });
-                  }}>{fmtDuration(r)}</button>
-                ))}
-              </div>
-            </div>
-            <label className="field"><span>Exercise note</span>
-              <textarea defaultValue={ex.notes} placeholder="Seat height, grip, how it felt…" onBlur={async (e) => {
-                const notes = e.target.value;
-                onLocalChange((x) => ({ ...x, notes }));
-                await updateWorkoutExercise(ex.id, { notes });
-              }} />
-            </label>
-            <button className="btn block danger" onClick={async () => {
-              if (!confirm(`Remove ${ex.name} from this workout?`)) return;
-              setMenu(false);
-              await removeWorkoutExercise(ex.id);
-              await onReload();
-            }}>Remove from workout</button>
-          </div>
-        </Sheet>
-      )}
-      {swap === 'pick' && (
-        <ExercisePicker
-          title={`Swap ${ex.name}`} similarTo={ex.exerciseId} onClose={() => setSwap(null)}
-          onPick={(e) => (ex.slotId ? setSwap({ id: e.id, name: e.name }) : void doSwap(e.id, 'today'))}
-        />
-      )}
-      {swap && swap !== 'pick' && (
-        <Sheet onClose={() => setSwap(null)} title={`Use ${swap.name}`}>
-          <div className="stack">
-            <button className="btn block primary" onClick={() => void doSwap(swap.id, 'today')}>Just for today</button>
-            <button className="btn block" onClick={() => void doSwap(swap.id, 'program')}>Replace in my program</button>
-          </div>
-        </Sheet>
-      )}
-      {plates != null && <PlateCalculator weight={plates} units={units} onClose={() => setPlates(null)} />}
-    </div>
+  const skipSheet = skip && (
+    <SkipSheet
+      target={skip.kind === 'exercise' ? { kind: 'exercise', wexId: ex.id } : { kind: 'set', wexId: ex.id, setId: skip.setId }}
+      exerciseName={ex.name}
+      initialFeedback={skip.kind === 'exercise' && ex.skipped ? parseSkip(ex.skipReason) : null}
+      onClose={() => setSkip(null)}
+      onSkipped={onReload}
+      onPick={async (sug) => {
+        if (skip.kind === 'exercise') await replaceSkipped(ex.id, sug.exerciseId);
+        else await addExerciseToWorkout(workoutId, sug.exerciseId);
+        await onReload();
+      }}
+      onAskCoach={(prompt) => { setSkip(null); onAskCoach(prompt); }}
+    />
   );
+
+  // The skip sheet is rendered beside the card so it keeps its state when the card flips to "skipped".
+  function renderCard() {
+    if (ex.skipped) {
+      const why = parseSkip(ex.skipReason);
+      return (
+        <div className="card ex-card skipped-card">
+          <div className="ex-head" style={{ paddingBottom: 0 }}>
+            <div className="grow">
+              <div className="row wrap" style={{ gap: 6 }}>
+                <ExerciseName name={ex.name} className="ex-title" />
+                <span className="badge">SKIPPED</span>
+              </div>
+              {why && <div className="small muted">{describeSkip(why)}</div>}
+            </div>
+            {!readOnly && (
+              <div className="row">
+                <button className="btn sm" onClick={async () => { await unskipExercise(ex.id); await onReload(); }}>Undo</button>
+              </div>
+            )}
+          </div>
+          {!readOnly && (
+            <div className="row" style={{ padding: '8px 4px 0' }}>
+              <button className="btn sm grow" onClick={() => setSkip({ kind: 'exercise' })}>Find a replacement</button>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    return (
+      <div className="card ex-card">
+        <div className="ex-head">
+          <div className="grow">
+            <div className="row wrap" style={{ gap: 6 }}>
+              <ExerciseName name={ex.name} className="ex-title" />
+              <span className={`badge ${ex.tier}`}>{ex.tier === 'T1' ? 'MAIN · HEAVY' : ex.tier === 'T2' ? 'MAIN · VOLUME' : 'ACCESSORY'}</span>
+            </div>
+            <div className="small muted">
+              {ex.schemeLabel}{ex.loadType !== 'time' && firstWorkWeight ? ` @ ${fmtNum(firstWorkWeight)} ${units}${ex.perHand ? ' each' : ''}` : ''}
+              {' · '}rest {fmtDuration(ex.restSeconds)}
+              {ex.substitutedFrom ? ' · swapped' : ''}
+            </div>
+          </div>
+          {!readOnly && <button className="btn icon ghost" onClick={() => setMenu(true)} aria-label="Exercise options">⋯</button>}
+        </div>
+        {ex.engineNote && <div className="notice" style={{ margin: '0 4px 8px' }}>{ex.engineNote}</div>}
+        {ex.notes && <div className="small" style={{ margin: '0 4px 8px' }}>📝 {ex.notes}</div>}
+        {tipsEnabled() && <div style={{ margin: '0 4px 8px' }}><FormTips tips={ex.tips} /></div>}
+
+        <table className="set-table">
+          <thead>
+            <tr>
+              <th>Set</th>
+              <th>Previous</th>
+              {ex.loadType !== 'time' && <th>{weightHeader}</th>}
+              <th>{repsHeader}</th>
+              <th aria-label="Done" />
+            </tr>
+          </thead>
+          <tbody>
+            {ex.sets.map((s) => {
+              const isWarm = s.kind === 'warmup';
+              const n = isWarm ? 0 : ++workingNo;
+              return (
+                <SetRow
+                  key={s.id} s={s} n={n} ex={ex} readOnly={readOnly}
+                  prev={isWarm ? null : ex.previous[n - 1] ?? null}
+                  onToggle={toggle} onEdit={edit} onMenu={setSetOptions}
+                />
+              );
+            })}
+          </tbody>
+        </table>
+        {!readOnly && working.some((s) => s.amrap && s.done) && (
+          <div className="row small" style={{ padding: '4px 4px 0' }}>
+            <span className="muted">AMRAP effort (RPE):</span>
+            <select
+              style={{ width: 90, minHeight: 34, padding: '4px 8px' }}
+              value={working.find((s) => s.amrap)?.rpe ?? ''}
+              onChange={(e) => { const s = working.find((x) => x.amrap)!; void edit(s, 'rpe', e.target.value); }}
+            >
+              <option value="">—</option>
+              {[6, 7, 7.5, 8, 8.5, 9, 9.5, 10].map((r) => <option key={r} value={r}>{r}</option>)}
+            </select>
+          </div>
+        )}
+        {!readOnly && (
+          <div className="row" style={{ padding: '8px 4px 0' }}>
+            <button className="btn sm grow" onClick={() => void addSet('working')}>+ Add set</button>
+            {isBarbell && <button className="btn sm" onClick={() => setPlates(firstWorkWeight)}>Plates</button>}
+            <button className="btn sm" onClick={() => setSkip({ kind: 'exercise' })}>Skip</button>
+          </div>
+        )}
+
+        {menu && (
+          <Sheet onClose={() => setMenu(false)} title={ex.name}>
+            <div className="stack">
+              <button className="btn block" onClick={() => { setMenu(false); setSkip({ kind: 'exercise' }); }}>Skip exercise…</button>
+              <button className="btn block" onClick={() => { setMenu(false); setSwap('pick'); }}>Swap exercise</button>
+              <button className="btn block" onClick={() => { setMenu(false); void addSet('warmup'); }}>Add warm-up set</button>
+              {isBarbell && <button className="btn block" onClick={() => { setMenu(false); setPlates(firstWorkWeight); }}>Plate calculator</button>}
+              <div>
+                <div className="small muted" style={{ marginBottom: 6 }}>Rest timer</div>
+                <div className="chips">
+                  {[45, 60, 90, 120, 180, 240, 300].map((r) => (
+                    <button key={r} className={`chip ${ex.restSeconds === r ? 'on' : ''}`} onClick={async () => {
+                      onLocalChange((e) => ({ ...e, restSeconds: r }));
+                      await updateWorkoutExercise(ex.id, { restSeconds: r });
+                    }}>{fmtDuration(r)}</button>
+                  ))}
+                </div>
+              </div>
+              <label className="field"><span>Exercise note</span>
+                <textarea defaultValue={ex.notes} placeholder="Seat height, grip, how it felt…" onBlur={async (e) => {
+                  const notes = e.target.value;
+                  onLocalChange((x) => ({ ...x, notes }));
+                  await updateWorkoutExercise(ex.id, { notes });
+                }} />
+              </label>
+              <button className="btn block danger" onClick={async () => {
+                if (!confirm(`Remove ${ex.name} from this workout?`)) return;
+                setMenu(false);
+                await removeWorkoutExercise(ex.id);
+                await onReload();
+              }}>Remove from workout</button>
+            </div>
+          </Sheet>
+        )}
+        {swap === 'pick' && (
+          <ExercisePicker
+            title={`Swap ${ex.name}`} similarTo={ex.exerciseId} onClose={() => setSwap(null)}
+            onPick={(e) => (ex.slotId ? setSwap({ id: e.id, name: e.name }) : void doSwap(e.id, 'today'))}
+          />
+        )}
+        {swap && swap !== 'pick' && (
+          <Sheet onClose={() => setSwap(null)} title={`Use ${swap.name}`}>
+            <div className="stack">
+              <button className="btn block primary" onClick={() => void doSwap(swap.id, 'today')}>Just for today</button>
+              <button className="btn block" onClick={() => void doSwap(swap.id, 'program')}>Replace in my program</button>
+            </div>
+          </Sheet>
+        )}
+        {plates != null && <PlateCalculator weight={plates} units={units} onClose={() => setPlates(null)} />}
+        {setOptions && (
+          <Sheet onClose={() => setSetOptions(null)} title={`${setOptions.kind === 'warmup' ? 'Warm-up' : 'Set'} options`}>
+            <div className="stack">
+              {setOptions.skipped ? (
+                <button className="btn block" onClick={async () => {
+                  const id = setOptions.id;
+                  setSetOptions(null);
+                  await skipSet(id, null);
+                  await onReload();
+                }}>Un-skip this set</button>
+              ) : (
+                <button className="btn block" onClick={() => { const id = setOptions.id; setSetOptions(null); setSkip({ kind: 'set', setId: id }); }}>
+                  Skip this set…
+                </button>
+              )}
+              <button className="btn block danger" onClick={async () => {
+                const target = setOptions;
+                setSetOptions(null);
+                await removeSet(target);
+              }}>Remove set</button>
+            </div>
+          </Sheet>
+        )}
+      </div>
+    );
+  }
+
+  return <>{renderCard()}{skipSheet}</>;
 }
 
 /** '' → null, invalid → undefined. */
@@ -331,11 +417,11 @@ function parseField(raw: string): number | null | undefined {
   return Number.isFinite(v) && v >= 0 ? v : undefined;
 }
 
-function SetRow({ s, n, ex, prev, readOnly, onToggle, onEdit, onRemove }: {
+function SetRow({ s, n, ex, prev, readOnly, onToggle, onEdit, onMenu }: {
   s: SetDTO; n: number; ex: WorkoutExercise; prev: { reps: number | null; weight: number | null } | null; readOnly: boolean;
   onToggle: (s: SetDTO, typed: { reps: number | null; weight: number | null }) => Promise<void>;
   onEdit: (s: SetDTO, field: 'actualReps' | 'actualWeight', raw: string) => Promise<void>;
-  onRemove: (s: SetDTO) => Promise<void>;
+  onMenu: (s: SetDTO) => void;
 }) {
   const [w, setW] = useState(s.actualWeight != null ? String(s.actualWeight) : '');
   const [r, setR] = useState(s.actualReps != null ? String(s.actualReps) : '');
@@ -348,17 +434,32 @@ function SetRow({ s, n, ex, prev, readOnly, onToggle, onEdit, onRemove }: {
   const curR = parseField(r) ?? null;
   const isPR = !isWarm && s.done && ex.bestE1rm > 0 && e1rm(curW ?? 0, curR ?? 0) > ex.bestE1rm + 1e-9;
 
+  const numberCell = (
+    <td className={`set-num ${isWarm ? 'warm' : ''}`}>
+      {readOnly ? (isWarm ? 'W' : n) : (
+        <button className="prev" style={{ fontWeight: 700, color: 'inherit' }} title="Set options (skip, remove)" onClick={() => onMenu(s)}>
+          {isWarm ? 'W' : n}
+        </button>
+      )}
+      {s.amrap && <span className="amrap-tag">AMRAP</span>}
+    </td>
+  );
+
+  if (s.skipped) {
+    const why = parseSkip(s.skipReason);
+    return (
+      <tr className="skipped">
+        {numberCell}
+        <td colSpan={ex.loadType === 'time' ? 3 : 4} className="small muted" style={{ textAlign: 'left', padding: '10px 6px' }}>
+          Skipped{why ? ` — ${describeSkip(why)}` : ''}
+        </td>
+      </tr>
+    );
+  }
+
   return (
     <tr className={s.done ? 'done' : ''}>
-      <td className={`set-num ${isWarm ? 'warm' : ''}`}>
-        {readOnly ? (isWarm ? 'W' : n) : (
-          <button className="prev" style={{ fontWeight: 700, color: 'inherit' }} title="Remove set"
-            onClick={() => { if (confirm('Remove this set?')) void onRemove(s); }}>
-            {isWarm ? 'W' : n}
-          </button>
-        )}
-        {s.amrap && <span className="amrap-tag">AMRAP</span>}
-      </td>
+      {numberCell}
       <td>
         <button className="prev" disabled={readOnly || !prev}
           onClick={() => {

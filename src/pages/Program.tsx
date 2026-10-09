@@ -4,6 +4,7 @@ import { getProgramView, localDate, regenerateProgram, setNextDay, setSlotExerci
 import { useAsync, useSession } from '../hooks';
 import { fmtNum } from '../format';
 import { ExercisePicker } from '../components/ExercisePicker';
+import { ExerciseName } from '../components/ExerciseName';
 
 export function ProgramPage() {
   const { profile } = useSession();
@@ -24,7 +25,7 @@ export function ProgramPage() {
       <p className="small muted">
         Each day pairs a <b>heavy main lift</b> (T1, low reps, last set as many as possible) with a <b>volume main lift</b> (T2),
         then accessories. Weights go up every time you hit your reps; a missed session switches to an easier rep scheme
-        before ever lowering the weight. Tap an exercise to change it.
+        before ever lowering the weight. Tap a name to watch a demo, or Change to swap it.
       </p>
       {data.days.map((d) => (
         <div key={d.dayIndex} className="card">
@@ -33,11 +34,12 @@ export function ProgramPage() {
             {d.dayIndex === data.nextDay && <span className="badge T1">NEXT</span>}
           </div>
           {d.exercises.map((e) => (
-            <button key={e.slotId} className="list-item" onClick={() => setEditing({ slotId: e.slotId, exerciseId: e.exerciseId })}>
+            <div key={e.slotId} className="list-item">
               <span className={`badge ${e.tier}`} style={{ width: 34, textAlign: 'center' }}>{e.tier === 'T3' ? 'ACC' : e.tier}</span>
-              <span className="grow">{e.name}</span>
+              <span className="grow"><ExerciseName name={e.name} /></span>
               <span className="small muted num">{e.scheme}{e.loadType === 'weight' && e.weight ? ` · ${fmtNum(e.weight)}${profile.units}` : ''}</span>
-            </button>
+              <button className="btn sm ghost" onClick={() => setEditing({ slotId: e.slotId, exerciseId: e.exerciseId })}>Change</button>
+            </div>
           ))}
           {d.dayIndex !== data.nextDay && (
             <button className="btn sm ghost" style={{ marginTop: 6 }} onClick={async () => { await setNextDay(d.dayIndex); await reload(); }}>

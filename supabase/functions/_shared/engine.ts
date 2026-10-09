@@ -213,29 +213,32 @@ export function accessoryCount(profile: Pick<Profile, 'sessionMinutes' | 'goal'>
   return Math.min(5, base + (profile.goal === 'hypertrophy' ? 1 : 0));
 }
 
-function pick(candidates: string[], profile: Profile, exclude: Set<string>, strictJoints: boolean): string | null {
+function pick(candidates: string[], profile: Profile, exclude: Set<string>, strictJoints: boolean, avoid: Set<string>): string | null {
   const ok = candidates.filter((id) => {
     const ex = EXERCISE_MAP.get(id);
     return ex && !exclude.has(id) && hasEquipment(ex, profile.equipment);
   });
+  const preferred = ok.filter((id) => !avoid.has(id));
+  if (preferred.length) ok.splice(0, ok.length, ...preferred);
   const safe = ok.find((id) => avoidsJoints(getExercise(id), profile.limitations));
   if (safe) return safe;
   return strictJoints ? null : ok[0] ?? null;
 }
 
-export function generateProgram(profile: Profile): Program {
+/** `avoid`: exercises from the health profile to steer away from when there's an alternative. */
+export function generateProgram(profile: Profile, avoid: Set<string> = new Set()): Program {
   const nAcc = accessoryCount(profile);
   const days = DAY_TEMPLATES.map((t): ProgramDay => {
     const used = new Set<string>();
     const slots: ProgramSlot[] = [];
-    const t1 = pick(MAIN_CANDIDATES[t.t1], profile, used, false) ?? MAIN_CANDIDATES[t.t1][0];
+    const t1 = pick(MAIN_CANDIDATES[t.t1], profile, used, false, avoid) ?? MAIN_CANDIDATES[t.t1][0];
     used.add(t1);
     slots.push({ id: `${t.key}-t1`, tier: 'T1', exerciseId: t1 });
-    const t2 = pick(MAIN_CANDIDATES[t.t2], profile, used, false) ?? MAIN_CANDIDATES[t.t2][0];
+    const t2 = pick(MAIN_CANDIDATES[t.t2], profile, used, false, avoid) ?? MAIN_CANDIDATES[t.t2][0];
     used.add(t2);
     slots.push({ id: `${t.key}-t2`, tier: 'T2', exerciseId: t2 });
     for (let i = 0; i < t.accessories.length && slots.length < 2 + nAcc; i++) {
-      const id = pick(t.accessories[i], profile, used, true);
+      const id = pick(t.accessories[i], profile, used, true, avoid);
       if (!id) continue;
       used.add(id);
       slots.push({ id: `${t.key}-t3-${i}`, tier: 'T3', exerciseId: id });
@@ -339,6 +342,8 @@ export interface PerformedSet {
   actualReps: number | null;
   actualWeight: number | null;
   done: boolean;
+  /** The user chose to skip this set (with a reason) — not a failed set. */
+  skipped?: boolean;
 }
 
 export type Outcome = 'progress' | 'repeat' | 'stage_down' | 'reset' | 'deload' | 'none';
@@ -366,6 +371,11 @@ export function evaluate(
   const inc = increment(ex, prev.tier, units, experience);
   const usedWeight = Math.min(...done.map((s) => s.actualWeight ?? 0));
   const prescribed = working[0]?.targetWeight ?? null;
+
+  // Skipped sets (pain, time, equipment…) aren't failures: hold the prescription.
+  if (working.some((s) => s.skipped)) {
+    return { state, outcome: 'repeat', message: `${ex.name}: some sets skipped — same plan next time.` };
+  }
 
   if (prev.tier === 'T3') return evaluateDoubleProgression(state, ex, working, goal, units, inc, usedWeight);
 

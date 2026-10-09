@@ -9,7 +9,7 @@ It's an installable Progressive Web App (works offline at the gym) built with Re
 The app uses Bolt's built-in database (Bolt Database), so you don't need a separate database account. Bolt Database is Supabase-based, which is why the code talks to it with the Supabase client.
 
 1. **Import** the repo into bolt.new from GitHub. The app code is on `master`.
-2. **Create the database tables.** Bolt sets up a database for the project and fills in `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`. Then, in Bolt's chat, ask: *"Apply the database migration in `supabase/migrations/` to the Bolt database."* You can check it worked from the database icon at the top centre of the project.
+2. **Create the database tables.** Bolt sets up a database for the project and fills in `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`. Then, in Bolt's chat, ask: *"Apply the database migrations in `supabase/migrations/` to the Bolt database, in order."* There are two files. You can check it worked from the database icon at the top centre of the project.
 3. **Publish.** The build is `npm run build` and the output is `dist/`; `netlify.toml` already says so. At this point everything works except the coach.
 4. **Turn on the AI coach** (optional):
    - **Deploy the server function.** Ask Bolt: *"Deploy the `coach` edge function in `supabase/functions/coach`."*
@@ -36,7 +36,18 @@ If you ever want direct control over the database (SQL editor, backups, monitori
 - Warm-ups are calculated for the heavy lift. The last set is marked AMRAP, with optional RPE.
 - A rest timer starts when you check off a set. It has ±15 s and skip buttons, and sounds, vibrates or notifies when rest is over.
 - Plate calculator, swaps (today only or for good), live personal records, and a summary when you finish showing what changes next time.
+- Every exercise name links to a YouTube form demo, with three form and safety tips underneath. You can hide the tips in Settings.
+- **Skip an exercise or single sets**, saying why: pain (and where), equipment busy, tired, short on time, too hard or easy, dislike, or other. The app then offers replacements ranked for that reason. For example, elbow pain on bench suggests presses that don't load the elbow. Skipped sets never count as a failed session.
+- **Add exercise** opens with a ranked "Suggested for you" list, ordered by what helps most. It uses muscles under-trained this week from your recent lifts, today's workout, your health profile and coach feedback, and shows the reason for each.
 - Sets logged without signal are queued and synced when you're back online.
+
+**Health profile**
+- Built continually from:
+  - skip reasons: pain becomes a sensitive joint plus an exercise to avoid, and fades after six weeks unless it recurs
+  - coach chats: the coach saves what you tell it, with an Undo button
+  - your own entries
+- Tracks sensitive joints (with severity), exercises to avoid, ones that work well, ones you dislike, and general notes.
+- Feeds suggestions, the coach's advice and program rebuilds. Review and edit it under Settings → Health profile.
 
 **Progress**
 - Estimated 1RM charts, rep records and session history for each lift.

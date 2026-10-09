@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router';
 import { db, exportCsv, localDate, regenerateProgram, saveProfile, type Profile } from '../api';
 import { useSession } from '../hooks';
 import { ProfileFields } from './Setup';
@@ -52,6 +53,19 @@ export function SettingsPage() {
           <button className="btn primary grow" onClick={() => save(false)}>Save</button>
           <button className="btn grow" onClick={() => save(true)}>Save & rebuild program</button>
         </div>
+      </div>
+
+      <div className="card spread">
+        <div>
+          <h2 style={{ marginBottom: 2 }}>Health profile</h2>
+          <div className="small muted">Sensitive joints, exercises to avoid or that work well — learned from your skips and coach chats.</div>
+        </div>
+        <Link className="btn sm" to="/health">Open</Link>
+      </div>
+
+      <div className="card">
+        <h2>Workout display</h2>
+        <Toggle k="lh_tips" label="Show form tips under each exercise" />
       </div>
 
       <div className="card">

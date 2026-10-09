@@ -94,7 +94,11 @@ export function CoachChat({ workoutId, suggestions, onApplied, initialPrompt }: 
                 <div style={{ fontWeight: 600, fontSize: 14 }}>{a.label}</div>
                 {(a.reason || a.note) && <div className="small muted">{a.reason || a.note}</div>}
                 <div className="row" style={{ marginTop: 6 }}>
-                  {a.status === 'pending' ? (
+                  {a.type === 'health' ? (
+                    a.status === 'applied'
+                      ? <><span className="small muted">✓ Saved</span><button className="btn sm ghost" onClick={() => act(m, i, true)}>Undo</button></>
+                      : <span className="small muted">Removed</span>
+                  ) : a.status === 'pending' ? (
                     <>
                       <button className="btn sm primary" onClick={() => act(m, i, false)}>Apply</button>
                       <button className="btn sm ghost" onClick={() => act(m, i, true)}>Dismiss</button>
