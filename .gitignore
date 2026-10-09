@@ -4,3 +4,7 @@ data/
 *.db
 *.db-*
 .env
+.env.local
+supabase/.temp/
+vite.config.*.timestamp-*.mjs
+vitest.config.*.timestamp-*.mjs
