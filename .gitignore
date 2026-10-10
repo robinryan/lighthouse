@@ -8,3 +8,6 @@ dist/
 supabase/.temp/
 vite.config.*.timestamp-*.mjs
 vitest.config.*.timestamp-*.mjs
+
+# Created by local `deno check`; the edge function pins versions in its imports
+/deno.lock
