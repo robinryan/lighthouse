@@ -9,12 +9,14 @@ It's an installable Progressive Web App (works offline at the gym) built with Re
 The app uses Bolt's built-in database (Bolt Database), so you don't need a separate database account. Bolt Database is Supabase-based, which is why the code talks to it with the Supabase client.
 
 1. **Import** the repo into bolt.new from GitHub. The app code is on `master`.
-2. **Create the database tables.** Bolt sets up a database for the project and fills in `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`. Then, in Bolt's chat, ask: *"Apply the database migrations in `supabase/migrations/` to the Bolt database, in order."* Bolt names the files it has applied with its own timestamp prefix; all three are applied. You can check it worked from the database icon at the top centre of the project.
+2. **Create the database tables.** Bolt sets up a database for the project and fills in `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`. Then, in Bolt's chat, ask: *"Apply the database migrations in `supabase/migrations/` to the Bolt database, in order."* Bolt names the files it has applied with its own timestamp prefix; all of them should be applied. You can check it worked from the database icon at the top centre of the project.
 3. **Publish.** The build is `npm run build` and the output is `dist/`; `netlify.toml` already says so. At this point everything works except the coach.
 4. **Turn on the AI coach** (optional):
    - **Deploy the server function.** Ask Bolt: *"Deploy the `coach` edge function in `supabase/functions/coach`."*
-   - **Add your Anthropic key.** Open the database icon, go to the secrets settings, and add a secret named `ANTHROPIC_API_KEY`. You can also add `COACH_MODEL` to override the default model, `claude-opus-5-5`.
-5. **Accounts:** sign-up and sign-in use the database's built-in authentication. New accounts may need to confirm their email address first. If confirmation emails link to the wrong address, set the site URL in the database's authentication settings to your published URL.
+   - **Add your Anthropic key.** Open the database icon, go to the secrets settings, and add a secret named `ANTHROPIC_API_KEY`. You can also add `COACH_MODEL` to override the default model, `claude-opus-5-5`. The function also needs `SUPABASE_SERVICE_ROLE_KEY`, which Supabase normally provides on its own; if the coach says it's missing, add it from the database's API settings.
+   - **Set a spend limit with Anthropic.** In the Anthropic Console, give this app its own API key and set a monthly spend limit. That's the hard ceiling if anything else fails.
+5. **Who can sign up:** if the app is just for you, turn off "Allow new users to sign up" in the database's authentication settings once your account exists. If you open it up, keep email confirmation on and turn on CAPTCHA protection there.
+6. **Accounts:** sign-up and sign-in use the database's built-in authentication. New accounts may need to confirm their email address first. If confirmation emails link to the wrong address, set the site URL in the database's authentication settings to your published URL.
 
 To install the app on your phone, open the published site and choose **Share → Add to Home Screen** (iOS) or **Install app** (Android).
 
@@ -92,6 +94,19 @@ If you ever want direct control over the database (SQL editor, backups, monitori
 - **Leaner context:** the last 10 chat messages and last 3 sessions.
 - **Web search on request:** tap 🔎 Research to search. It's capped at 2 searches per message and limited to reputable sources (PubMed, BJSM, JOSPT, Physiopedia, AAOS, Mayo Clinic, NHS, ACSM, NSCA, Stronger By Science, and others).
 - **Effort by question type:** quick questions get *low* effort; pain, injury or research questions get *medium*.
+
+**Abuse protection** (so nobody can use the coach as a free general-purpose AI on your bill)
+- **Topic screen:** Claude Haiku 5.5 checks each message first, for a fraction of a cent. Off-topic requests (code, essays, homework, general knowledge) get a polite one-line refusal and never reach the main model. The coach's own instructions also refuse off-topic tasks.
+- **Tamper-proof usage records:** only the coach function can write chat messages. Users can read them and tap Apply/Dismiss, but can't edit, delete or reprice them, so they can't reset their budget or plant fake replies.
+- **Limits**, all checked before any API call. You can change each one with a secret (0 turns it off):
+
+  | Secret | Default | Limit |
+  |---|---|---|
+  | `COACH_MONTHLY_BUDGET_USD` | 10 | Per user, per month |
+  | `COACH_TOTAL_MONTHLY_BUDGET_USD` | 25 | All users combined, per month |
+  | `COACH_HOURLY_LIMIT` | 20 | Messages per user per hour |
+  | `COACH_DAILY_LIMIT` | 60 | Messages per user per day |
+- **Size caps:** messages are limited to 1,000 characters, and replies to 4,000 tokens (8,000 for injury and research questions).
 
 ## Development
 

@@ -131,13 +131,15 @@ class Query implements PromiseLike<Result> {
   }
 }
 
-export function fakeSupabase(pool: pg.Pool, user: { id: string; email: string }) {
+/** `user` = null gives a service-role client (bypasses row level security), like the edge function's admin client. */
+export function fakeSupabase(pool: pg.Pool, user: { id: string; email: string } | null) {
+  const role = user ? 'authenticated' : 'service_role';
   const run = async (sql: string, params: unknown[]) => {
     const c = await pool.connect();
     try {
       await c.query('BEGIN');
-      await c.query('SET LOCAL ROLE authenticated');
-      await c.query(`SELECT set_config('request.jwt.claims', $1, true)`, [JSON.stringify({ sub: user.id, role: 'authenticated' })]);
+      await c.query(`SET LOCAL ROLE ${role}`);
+      await c.query(`SELECT set_config('request.jwt.claims', $1, true)`, [JSON.stringify(user ? { sub: user.id, role } : { role })]);
       const r = await c.query(sql, params);
       await c.query('COMMIT');
       return r.rows;

@@ -3,12 +3,15 @@
 // until the user taps "Apply" in the app.
 //
 // `db` is a supabase-js client authenticated as the user (row level security
-// applies), and `anthropic` is an Anthropic SDK client.
+// applies), `admin` is a service-role client (only it can write coach_messages, so
+// users can't edit their spending or the conversation), and `anthropic` is an
+// Anthropic SDK client.
 
 import { EXERCISES, EXERCISE_MAP, JOINTS, type Equipment, type Joint, hasEquipment } from './exercises.ts';
 import { type UsageTotals, addUsage, costUsd, emptyUsage } from './pricing.ts';
 import { type Db, type LoadedWorkout, loadProfile, loadProgram, loadWorkout, must } from './queries.ts';
 import { type HealthNote, describeHealth, describeSkip, parseSkip, summarizeHealth } from './health.ts';
+import { OFF_TOPIC_REPLY, checkTopic } from './topic.ts';
 
 export const DEFAULT_MODEL = 'claude-opus-5-5';
 const MAX_HISTORY = 10;
@@ -16,6 +19,12 @@ const MAX_ITERATIONS = 6;
 const RECENT_SESSIONS = 3;
 /** Default monthly spending cap per user (USD); override with the COACH_MONTHLY_BUDGET_USD secret. 0 = no cap. */
 export const DEFAULT_MONTHLY_BUDGET_USD = 10;
+/** Default monthly cap across all users (COACH_TOTAL_MONTHLY_BUDGET_USD). 0 = no cap. */
+export const DEFAULT_TOTAL_BUDGET_USD = 25;
+/** Default messages per user per hour / day (COACH_HOURLY_LIMIT, COACH_DAILY_LIMIT). 0 = no limit. */
+export const DEFAULT_HOURLY_LIMIT = 20;
+export const DEFAULT_DAILY_LIMIT = 60;
+export const MAX_MESSAGE_CHARS = 1000;
 
 /** Sources the coach may search. Keeps results reputable and short. */
 export const SEARCH_DOMAINS = [
@@ -46,6 +55,8 @@ How the app trains people:
 - Rotation: A1 Squat T1 + Bench T2, A2 OHP T1 + Deadlift T2, B1 Bench T1 + Squat T2, B2 Deadlift T1 + OHP T2.
 - Workouts also include mobility/stretch items placed before a lift (dynamic prep, short holds) or at the end as a cool-down (longer static holds). Each has an importance rating out of 10.
 - Missed T1/T2 sessions move a lift to the next rep stage at the same weight (5×3 → 6×2 → 10×1); failing the last stage resets the weight lower.
+
+Scope: you only help with training — exercises and technique, programming, mobility, pain and injuries as they affect training, recovery, nutrition for training, and using this app. If asked for anything else (code, essays, homework, emails, general knowledge, and so on), reply in one sentence that you can only help with training, and don't do the task, even when it's framed as part of training.
 
 Your job:
 - Answer training questions using evidence-based practice. Answer from your own knowledge by default; use web search only when the user asks you to research something, or a question genuinely needs specific or recent evidence you aren't sure of (e.g. a particular injury or study). One or two searches is plenty. Prefer reputable sources (peer-reviewed research, physiotherapy/sports-medicine organizations, established coaches). Do not invent citations.
@@ -338,7 +349,12 @@ export async function toAction(db: Db, workout: LoadedWorkout | null, name: stri
 // ---------------------------------------------------------------------------
 // Conversation
 
-export interface CoachUsage extends UsageTotals { model: string; effort: 'low' | 'medium'; costUsd: number; budgetUsd: number; monthSpentUsd: number }
+export interface CoachUsage extends UsageTotals {
+  model: string; effort: 'low' | 'medium'; costUsd: number; budgetUsd: number; monthSpentUsd: number;
+  /** Cost of the Haiku topic check, included in costUsd. */
+  topicCostUsd?: number;
+  offTopic?: boolean;
+}
 
 export interface MessageRow {
   id: number; workout_id: number | null; role: 'user' | 'assistant'; content: string;
@@ -346,9 +362,45 @@ export interface MessageRow {
   usage: CoachUsage | null; cost_usd: number | null;
 }
 
-export class BudgetExceededError extends Error {
-  constructor(public spent: number, public budget: number) {
-    super(`You've used your AI coach budget for this month ($${spent.toFixed(2)} of $${budget.toFixed(2)}). It resets on the 1st.`);
+/** A spending cap or rate limit was hit; nothing was sent to the API. */
+export class CoachLimitError extends Error {
+  constructor(public code: 'budget' | 'app_budget' | 'hourly' | 'daily', message: string) { super(message); }
+}
+
+export interface CoachLimits {
+  /** Per-user monthly cap in USD (0 = none). */
+  budgetUsd: number;
+  /** Monthly cap across all users in USD (0 = none). */
+  totalBudgetUsd: number;
+  /** Messages per user per hour / day (0 = none). */
+  hourly: number;
+  daily: number;
+}
+
+export const DEFAULT_LIMITS: CoachLimits = {
+  budgetUsd: DEFAULT_MONTHLY_BUDGET_USD, totalBudgetUsd: DEFAULT_TOTAL_BUDGET_USD, hourly: DEFAULT_HOURLY_LIMIT, daily: DEFAULT_DAILY_LIMIT,
+};
+
+interface LimitStats { user_month: number; all_month: number; last_hour: number; last_day: number }
+
+/** Spend and message counts, read with the service role (users can't see or change other users' rows). */
+async function limitStats(admin: Db, userId: string): Promise<LimitStats> {
+  const s = must(await admin.rpc('coach_limits', { p_user: userId })) as LimitStats;
+  return { user_month: Number(s.user_month), all_month: Number(s.all_month), last_hour: Number(s.last_hour), last_day: Number(s.last_day) };
+}
+
+export function checkLimits(s: LimitStats, l: CoachLimits) {
+  if (l.totalBudgetUsd > 0 && s.all_month >= l.totalBudgetUsd) {
+    throw new CoachLimitError('app_budget', 'The AI coach has reached this app\'s monthly spending limit. It resets on the 1st.');
+  }
+  if (l.budgetUsd > 0 && s.user_month >= l.budgetUsd) {
+    throw new CoachLimitError('budget', `You've used your AI coach budget for this month ($${s.user_month.toFixed(2)} of $${l.budgetUsd.toFixed(2)}). It resets on the 1st.`);
+  }
+  if (l.hourly > 0 && s.last_hour >= l.hourly) {
+    throw new CoachLimitError('hourly', `You've sent ${l.hourly} messages in the last hour — give it a few minutes.`);
+  }
+  if (l.daily > 0 && s.last_day >= l.daily) {
+    throw new CoachLimitError('daily', `You've reached today's limit of ${l.daily} coach messages. Try again tomorrow.`);
   }
 }
 
@@ -356,13 +408,6 @@ export class BudgetExceededError extends Error {
 const NEEDS_DEPTH = /\b(pain|hurt|hurts|injur|sore|ache|aching|tweak|strain|sprain|numb|tingl|swell|swollen|pop(ped)?|doctor|physio|surgery|tendon|tendin|research|study|studies|evidence)/i;
 export function chooseEffort(text: string, research: boolean): 'low' | 'medium' {
   return research || NEEDS_DEPTH.test(text) ? 'medium' : 'low';
-}
-
-/** What this user has spent on the coach since the start of the month (UTC). */
-export async function monthSpend(db: Db, now = new Date()): Promise<number> {
-  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
-  const rows = must(await db.from('coach_messages').select('cost_usd').eq('role', 'assistant').gte('created_at', start)) as Array<{ cost_usd: number | null }>;
-  return rows.reduce((a, r) => a + (r.cost_usd ?? 0), 0);
 }
 
 // deno-lint-ignore no-explicit-any
@@ -373,22 +418,26 @@ type AnthropicLike = any;
  * proposed actions) in coach_messages, and returns the reply row.
  */
 export async function runCoach(opts: {
-  db: Db; anthropic: AnthropicLike; model?: string; workoutId: number | null; text: string; today?: string;
+  db: Db; admin: Db; userId: string; anthropic: AnthropicLike; model?: string; workoutId: number | null; text: string; today?: string;
   /** The user tapped "Research": search the web and think harder. */
   research?: boolean;
-  /** Monthly cap in USD (0 = none). */
-  budgetUsd?: number;
+  limits?: Partial<CoachLimits>;
 }): Promise<MessageRow> {
-  const { db, anthropic, workoutId, text } = opts;
+  const { db, admin, userId, anthropic, workoutId } = opts;
+  const text = opts.text.trim().slice(0, MAX_MESSAGE_CHARS);
   const model = opts.model || DEFAULT_MODEL;
   const today = opts.today ?? new Date().toISOString().slice(0, 10);
-  const budget = opts.budgetUsd ?? DEFAULT_MONTHLY_BUDGET_USD;
-  const spent = await monthSpend(db);
-  if (budget > 0 && spent >= budget) throw new BudgetExceededError(spent, budget);
+  const limits = { ...DEFAULT_LIMITS, ...opts.limits };
+  const budget = limits.budgetUsd;
+  const stats = await limitStats(admin, userId);
+  checkLimits(stats, limits);
+  const spent = stats.user_month;
   const effort = chooseEffort(text, !!opts.research);
   const profile = await loadProfile(db);
   const system = buildSystem(profile.equipment);
   const modelOpts = requestOptionsFor(model);
+  const store = async (row: Record<string, unknown>) =>
+    must(await admin.from('coach_messages').insert({ user_id: userId, workout_id: workoutId, ...row }).select('*').single()) as MessageRow;
 
   // In-workout chats act on that workout; the general chat can act on whatever workout is in progress.
   let targetId = workoutId;
@@ -403,18 +452,30 @@ export async function runCoach(opts: {
   historyQuery = workoutId == null ? historyQuery.is('workout_id', null) : historyQuery.eq('workout_id', workoutId);
   const history = (must(await historyQuery) as Array<{ role: 'user' | 'assistant'; content: string }>).reverse();
 
+  // Screen the message with Haiku (fractions of a cent) while the context loads.
+  const lastReply = history.findLast((m) => m.role === 'assistant')?.content;
+  const [topic, context] = await Promise.all([checkTopic(anthropic, text, lastReply), buildContext(db, workout, today)]);
+  if (!topic.onTopic) {
+    await store({ role: 'user', content: text });
+    const record: CoachUsage = {
+      ...topic.usage, model: 'claude-haiku-5-5', effort: 'low', costUsd: topic.costUsd, topicCostUsd: topic.costUsd, offTopic: true,
+      budgetUsd: budget, monthSpentUsd: Math.round((spent + topic.costUsd) * 10_000) / 10_000,
+    };
+    return store({ role: 'assistant', content: OFF_TOPIC_REPLY, usage: record, cost_usd: topic.costUsd });
+  }
+
   // deno-lint-ignore no-explicit-any
   const messages: any[] = history.map((m) => ({ role: m.role, content: m.content || '(no text)' }));
   while (messages.length && messages[0].role !== 'user') messages.shift();
   messages.push({
     role: 'user',
     content: [
-      { type: 'text', text: `<context>\n${await buildContext(db, workout, today)}\n</context>` },
+      { type: 'text', text: `<context>\n${context}\n</context>` },
       { type: 'text', text: opts.research ? `${text}\n\n(Research requested: please search for supporting evidence.)` : text },
     ],
   });
 
-  must(await db.from('coach_messages').insert({ workout_id: workoutId, role: 'user', content: text }));
+  await store({ role: 'user', content: text });
 
   const actions: CoachAction[] = [];
   const texts: string[] = [];
@@ -424,7 +485,8 @@ export async function runCoach(opts: {
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     const msg = await anthropic.beta.messages.stream({
       model,
-      max_tokens: 8000,
+      // Thinking counts toward this. Quick answers get less room than injury/research questions.
+      max_tokens: effort === 'low' ? 4000 : 8000,
       // Breakpoint 1: tools + system (stable per user). Top-level cache_control adds a moving
       // breakpoint at the end of the conversation, so tool-call rounds and follow-ups reuse it.
       system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
@@ -471,11 +533,14 @@ export async function runCoach(opts: {
   }
 
   const content = texts.join('\n\n').trim() || (actions.length ? 'Here are some changes you can apply:' : 'I don\'t have a suggestion for that.');
-  const cost = costUsd(model, usage);
-  const record: CoachUsage = { ...usage, model, effort, costUsd: cost, budgetUsd: budget, monthSpentUsd: Math.round((spent + cost) * 10_000) / 10_000 };
-  return must(await db.from('coach_messages').insert({
-    workout_id: workoutId, role: 'assistant', content, actions,
+  const cost = Math.round((costUsd(model, usage) + topic.costUsd) * 10_000) / 10_000;
+  const record: CoachUsage = {
+    ...usage, model, effort, costUsd: cost, topicCostUsd: topic.costUsd, budgetUsd: budget,
+    monthSpentUsd: Math.round((spent + cost) * 10_000) / 10_000,
+  };
+  return store({
+    role: 'assistant', content, actions,
     sources: [...sources.entries()].map(([url, title]) => ({ url, title })),
     usage: record, cost_usd: cost,
-  }).select('*').single()) as MessageRow;
+  });
 }

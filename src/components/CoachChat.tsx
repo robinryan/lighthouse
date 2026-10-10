@@ -156,6 +156,7 @@ export function CoachChat({ workoutId, suggestions, onApplied, initialPrompt }: 
           rows={1}
           placeholder={online ? 'e.g. My elbow hurts today — what should I do instead?' : 'Offline — coach unavailable'}
           value={text}
+          maxLength={1000}
           disabled={!online}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(text); } }}
