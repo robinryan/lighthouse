@@ -16,7 +16,12 @@ The app uses Bolt's built-in database (Bolt Database), so you don't need a separ
    - **Add your Anthropic key.** Open the database icon, go to the secrets settings, and add a secret named `ANTHROPIC_API_KEY`. You can also add `COACH_MODEL` to override the default model, `claude-opus-5-5`. The function also needs `SUPABASE_SERVICE_ROLE_KEY`, which Supabase normally provides on its own; if the coach says it's missing, add it from the database's API settings.
    - **Set a spend limit with Anthropic.** In the Anthropic Console, give this app its own API key and set a monthly spend limit. That's the hard ceiling if anything else fails.
 5. **Who can sign up:** if the app is just for you, turn off "Allow new users to sign up" in the database's authentication settings once your account exists. If you open it up, keep email confirmation on and turn on CAPTCHA protection there.
-6. **Accounts:** sign-up and sign-in use the database's built-in authentication. New accounts may need to confirm their email address first. If confirmation emails link to the wrong address, set the site URL in the database's authentication settings to your published URL.
+6. **Email links (password reset, magic link, confirmation).** Supabase only sends people to addresses on its allow list and falls back to its **Site URL** (by default `http://localhost:3000`) for anything else, which is why links can open a local address. In the database's authentication settings, under URL configuration:
+   - set **Site URL** to your published address, e.g. `https://your-app.bolt.host`
+   - add `https://your-app.bolt.host/**` under **Redirect URLs**
+   - optionally, add a `VITE_SITE_URL` environment variable with the same address, so links requested from Bolt's preview still open the live app.
+7. **Magic link codes:** on a phone, an emailed link opens in the browser rather than the installed app. To sign in inside the installed app, the login screen also accepts the code from the email. Supabase's default magic-link email only contains the link, so edit the **Magic Link** email template to add the code, e.g. `<p>Or enter this code: <strong>{{ .Token }}</strong></p>`.
+8. **Accounts:** sign-up and sign-in use the database's built-in authentication. New accounts may need to confirm their email address first.
 
 To install the app on your phone, open the published site and choose **Share → Add to Home Screen** (iOS) or **Install app** (Android).
 

@@ -9,7 +9,7 @@ export * from './data/types';
 export * from './data/training';
 export * from './data/stats';
 export { listMessages, askCoach, applyAction, coachUsageThisMonth, CoachNotConfiguredError, type CoachMonthUsage } from './data/coach';
-export { db, isConfigured } from './data/client';
+export { db, isConfigured, siteUrl, takeAuthLinkError } from './data/client';
 export { NetworkError };
 
 export function localDate(d = new Date()): string {

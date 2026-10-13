@@ -1,9 +1,9 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router';
-import { db, flushOutbox, getProfile, isConfigured, NetworkError, type Profile, type User } from './api';
+import { db, flushOutbox, getProfile, isConfigured, NetworkError, type Profile, type User, takeAuthLinkError } from './api';
 import { SessionContext, useOnline } from './hooks';
 import { RestTimerBar, RestTimerProvider, useRestTimer } from './components/RestTimer';
-import { LoginPage } from './pages/Login';
+import { LoginPage, NewPasswordPage } from './pages/Login';
 import { SetupPage } from './pages/Setup';
 import { TodayPage } from './pages/Today';
 import { WorkoutPage } from './pages/Workout';
@@ -56,6 +56,10 @@ function Shell({ children }: { children: React.ReactNode }) {
   );
 }
 
+// Read before Supabase handles the URL: a failed email link (e.g. expired) and a password-reset link.
+const OPENED_RECOVERY_LINK = /(^|[#&?])type=recovery(&|$)/.test(window.location.hash);
+const LINK_ERROR = takeAuthLinkError();
+
 export function App() {
   if (!isConfigured()) {
     return (
@@ -73,6 +77,8 @@ function SignedInApp() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
 
+  // Opening a password-reset link signs you in; ask for a new password before anything else.
+  const [recovering, setRecovering] = useState(OPENED_RECOVERY_LINK);
   const load = useCallback(async (u: User | null) => {
     if (!u) { setUser(null); setProfile(null); return; }
     try {
@@ -89,7 +95,8 @@ function SignedInApp() {
     const auth = db().auth;
     void auth.getSession().then(({ data }) => load(data.session ? { id: data.session.user.id, email: data.session.user.email ?? '' } : null));
     const { data: sub } = auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_IN' || event === 'SIGNED_OUT' || event === 'USER_UPDATED') {
+      if (event === 'PASSWORD_RECOVERY') setRecovering(true);
+      if (event === 'SIGNED_IN' || event === 'SIGNED_OUT' || event === 'USER_UPDATED' || event === 'PASSWORD_RECOVERY') {
         // Defer: Supabase recommends not awaiting other calls inside this callback.
         setTimeout(() => void load(session ? { id: session.user.id, email: session.user.email ?? '' } : null), 0);
       }
@@ -113,7 +120,8 @@ function SignedInApp() {
   if (user === undefined) {
     return <main className="app">{bootError ? <div className="card stack"><p className="error">{bootError}</p><button className="btn" onClick={() => window.location.reload()}>Retry</button></div> : <p className="muted center" style={{ marginTop: '30vh' }}>Loading…</p>}</main>;
   }
-  if (!user || !session) return <main className="app"><LoginPage /></main>;
+  if (!user || !session) return <main className="app"><LoginPage linkError={LINK_ERROR} /></main>;
+  if (recovering) return <main className="app"><NewPasswordPage onDone={() => setRecovering(false)} /></main>;
   if (!session.profile.onboarded) {
     return <SessionContext.Provider value={session}><main className="app"><SetupPage /></main></SessionContext.Provider>;
   }
