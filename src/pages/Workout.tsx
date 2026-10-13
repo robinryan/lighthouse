@@ -35,6 +35,8 @@ export function WorkoutPage() {
   const [suggestions, setSuggestions] = useState<Suggestion[] | null>(null);
   const [finishing, setFinishing] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [timerSheet, setTimerSheet] = useState(false);
+  const [plates, setPlates] = useState<number | null>(null);
   const online = useOnline();
   const timer = useRestTimer();
 
@@ -52,6 +54,16 @@ export function WorkoutPage() {
   if (error) return <p className="error">{error}</p>;
   if (!w) return <p className="muted">Loading workout…</p>;
   const readOnly = w.status !== 'in_progress';
+  // The exercise you're on: the first one with sets still to do. It gets the highlight.
+  const activeId = readOnly ? null : w.exercises.find((e) => !e.skipped && e.sets.some((s) => !s.done && !s.skipped))?.id ?? null;
+  const nextBarbellWeight = () => {
+    for (const e of w.exercises) {
+      if (e.skipped || !e.equipment.includes('barbell')) continue;
+      const s = e.sets.find((x) => !x.done && !x.skipped && x.targetWeight);
+      if (s) return s.targetWeight!;
+    }
+    return 0;
+  };
 
   const updateExercise = (exId: number, fn: (e: WorkoutExercise) => WorkoutExercise) =>
     setData((cur) => cur && { ...cur, exercises: cur.exercises.map((e) => (e.id === exId ? fn(e) : e)) });
@@ -88,27 +100,38 @@ export function WorkoutPage() {
 
   return (
     <div>
-      <div className={`page-header ${readOnly ? '' : 'workout-header'}`}>
+      {!readOnly && (
+        <div className="workout-header">
+          <button className="tool" onClick={() => setTimerSheet(true)}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><circle cx="12" cy="13.5" r="7.5" /><path d="M12 13.5V9.5M9.5 2.5h5M18.5 6.5l1.5-1.5" /></svg>
+            Timer
+          </button>
+          <button className="tool" onClick={() => setPlates(nextBarbellWeight())}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><rect x="4" y="3" width="16" height="18" rx="2" /><path d="M8 8h3M9.5 6.5v3M13.5 8h3M8 15.5h3M13.5 14l3 3M16.5 14l-3 3" /></svg>
+            Plates
+          </button>
+          <button className="tool" onClick={() => openCoach()}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z" /></svg>
+            Coach
+          </button>
+          <span className="grow" />
+          <span className="time-pill" aria-label="Time elapsed">{fmtDuration(elapsed)}</span>
+          <button className="btn primary" onClick={finish} disabled={finishing}>{finishing ? 'Saving…' : 'Finish'}</button>
+        </div>
+      )}
+      <div className={readOnly ? 'page-header' : 'workout-title'}>
         <div className="grow">
-          <h1 style={{ marginBottom: 2 }}>{w.title}</h1>
-          <div className="small muted num">
-            {readOnly ? w.date : `${fmtDuration(elapsed)} elapsed`} · {progress.done}/{progress.total} sets
+          <h1>{w.title}</h1>
+          <div className="muted num">
+            {readOnly ? w.date : `${progress.done} of ${progress.total} sets done`}
           </div>
         </div>
-        {!readOnly && (
-          <div className="row">
-            <button className="btn icon" onClick={() => openCoach()} aria-label="Ask the coach" title="Ask the coach">
-              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z" /></svg>
-            </button>
-            <button className="btn primary" onClick={finish} disabled={finishing}>{finishing ? 'Saving…' : 'Finish'}</button>
-          </div>
-        )}
       </div>
       {msg && <p className="error">{msg}</p>}
 
       {w.exercises.map((ex, i) => (
         <ExerciseCard
-          key={ex.id} ex={ex} units={profile.units} readOnly={readOnly}
+          key={ex.id} ex={ex} units={profile.units} readOnly={readOnly} active={ex.id === activeId}
           isLast={i === w.exercises.length - 1}
           nextName={w.exercises[i + 1]?.name ?? null}
           onLocalChange={(fn) => updateExercise(ex.id, fn)}
@@ -145,6 +168,19 @@ export function WorkoutPage() {
           }}
         />
       )}
+      {timerSheet && (
+        <Sheet onClose={() => setTimerSheet(false)} title="Rest timer">
+          <div className="chips">
+            {[60, 90, 120, 180, 240, 300].map((sec) => (
+              <button key={sec} className="chip" onClick={() => { unlockAudio(); timer.start(sec, w.exercises.find((e) => e.id === activeId)?.name ?? w.title); setTimerSheet(false); }}>
+                {fmtDuration(sec)}
+              </button>
+            ))}
+          </div>
+          {timer.timer && <button className="btn block" style={{ marginTop: 12 }} onClick={() => { timer.stop(); setTimerSheet(false); }}>Stop timer</button>}
+        </Sheet>
+      )}
+      {plates != null && <PlateCalculator weight={plates} units={profile.units} onClose={() => setPlates(null)} />}
       {coachOpen && (
         <Sheet onClose={() => setCoachOpen(false)} tall title="Coach">
           <CoachChat workoutId={w.id} suggestions={COACH_SUGGESTIONS} onApplied={reload} initialPrompt={coachPrompt} />
@@ -154,8 +190,8 @@ export function WorkoutPage() {
   );
 }
 
-function ExerciseCard({ ex, units, readOnly, isLast, nextName, onLocalChange, onReload, onAskCoach, workoutId }: {
-  ex: WorkoutExercise; units: Units; readOnly: boolean; isLast: boolean; nextName: string | null;
+function ExerciseCard({ ex, units, readOnly, active, isLast, nextName, onLocalChange, onReload, onAskCoach, workoutId }: {
+  ex: WorkoutExercise; units: Units; readOnly: boolean; active: boolean; isLast: boolean; nextName: string | null;
   onLocalChange: (fn: (e: WorkoutExercise) => WorkoutExercise) => void; onReload: () => Promise<void>;
   onAskCoach: (prompt?: string) => void; workoutId: number;
 }) {
@@ -171,7 +207,8 @@ function ExerciseCard({ ex, units, readOnly, isLast, nextName, onLocalChange, on
   const [setOptions, setSetOptions] = useState<SetDTO | null>(null);
   const isBarbell = ex.equipment.includes('barbell');
   const working = ex.sets.filter((s) => s.kind === 'working');
-  const weightHeader = ex.loadType === 'bodyweight' ? `+${units}` : ex.perHand ? `${units} ea` : units;
+  const unitLabel = units === 'lb' ? 'Lbs' : 'Kg';
+  const weightHeader = ex.loadType === 'bodyweight' ? `+${unitLabel}` : ex.perHand ? `${unitLabel} ea` : unitLabel;
   const repsHeader = ex.loadType === 'time' ? 'Sec' : 'Reps';
   const showWeight = ex.loadType !== 'time' && !ex.stretch;
   const [allRecs, setAllRecs] = useState(false);
@@ -287,22 +324,24 @@ function ExerciseCard({ ex, units, readOnly, isLast, nextName, onLocalChange, on
       return (
         <div ref={cardRef} className="card ex-card collapsed-card" role="button" tabIndex={0}
           onClick={() => setExpanded(true)} onKeyDown={(e) => { if (e.key === 'Enter') setExpanded(true); }}>
-          <span className="done-dot" aria-hidden="true">✓</span>
+          <span className="done-dot" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
+          </span>
           <div className="grow">
-            <div style={{ fontWeight: 700 }}>{ex.name}</div>
+            <div className="ex-title">{ex.name}</div>
             <div className="small muted">
               {doneCount} set{doneCount === 1 ? '' : 's'} done
               {best && ex.loadType !== 'time' && best.actualWeight ? ` · best ${fmtNum(best.actualWeight)}×${best.actualReps}` : ''}
               {ex.sets.some((x) => x.skipped) ? ' · some skipped' : ''}
             </div>
           </div>
-          <span className="small muted">Edit</span>
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-label="Expand"><path d="M6 9l6 6 6-6" /></svg>
         </div>
       );
     }
 
     return (
-      <div ref={cardRef} className="card ex-card">
+      <div ref={cardRef} className={`card ex-card ${active ? 'active' : ''}`}>
         <div className="ex-head">
           <div className="grow">
             <div className="row wrap" style={{ gap: 6 }}>
@@ -368,18 +407,22 @@ function ExerciseCard({ ex, units, readOnly, isLast, nextName, onLocalChange, on
             <tr>
               <th>Set</th>
               <th>Previous</th>
+              <th className="col-target">Target</th>
               {showWeight && <th>{weightHeader}</th>}
               <th>{repsHeader}</th>
-              <th aria-label="Done" />
+              <th aria-label="Done">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 12.5l4.5 4.5L16 7.5M11 16l1 1L21.5 7.5" /></svg>
+              </th>
             </tr>
           </thead>
           <tbody>
             {ex.sets.map((s) => {
               const isWarm = s.kind === 'warmup';
+              const current = active && s.id === ex.sets.find((x) => !x.done && !x.skipped)?.id;
               const n = isWarm ? 0 : ++workingNo;
               return (
                 <SetRow
-                  key={s.id} s={s} n={n} ex={ex} readOnly={readOnly} showWeight={showWeight}
+                  key={s.id} s={s} n={n} ex={ex} readOnly={readOnly} showWeight={showWeight} current={!!current} units={units}
                   prev={isWarm ? null : ex.previous[n - 1] ?? null}
                   onToggle={toggle} onEdit={edit} onMenu={setSetOptions}
                 />
@@ -494,8 +537,9 @@ function parseField(raw: string): number | null | undefined {
   return Number.isFinite(v) && v >= 0 ? v : undefined;
 }
 
-function SetRow({ s, n, ex, prev, readOnly, showWeight, onToggle, onEdit, onMenu }: {
+function SetRow({ s, n, ex, prev, readOnly, showWeight, current, units, onToggle, onEdit, onMenu }: {
   s: SetDTO; n: number; ex: WorkoutExercise; prev: { reps: number | null; weight: number | null } | null; readOnly: boolean; showWeight: boolean;
+  current: boolean; units: Units;
   onToggle: (s: SetDTO, typed: { reps: number | null; weight: number | null }) => Promise<void>;
   onEdit: (s: SetDTO, field: 'actualReps' | 'actualWeight', raw: string) => Promise<void>;
   onMenu: (s: SetDTO) => void;
@@ -510,6 +554,10 @@ function SetRow({ s, n, ex, prev, readOnly, showWeight, onToggle, onEdit, onMenu
   const curW = parseField(w) ?? null;
   const curR = parseField(r) ?? null;
   const isPR = !isWarm && s.done && ex.bestE1rm > 0 && e1rm(curW ?? 0, curR ?? 0) > ex.bestE1rm + 1e-9;
+  const unit = units === 'lb' ? 'lb' : 'kg';
+  const reps = s.targetReps != null ? `${s.targetReps}${s.amrap ? '+' : ''}` : '';
+  const target = ex.loadType === 'time' ? (s.targetReps != null ? `${s.targetReps}s` : '—')
+    : s.targetWeight ? `${fmtNum(s.targetWeight)} ${unit} × ${reps}` : reps ? `× ${reps}` : '—';
 
   const numberCell = (
     <td className={`set-num ${isWarm ? 'warm' : ''}`}>
@@ -527,7 +575,7 @@ function SetRow({ s, n, ex, prev, readOnly, showWeight, onToggle, onEdit, onMenu
     return (
       <tr className="skipped">
         {numberCell}
-        <td colSpan={showWeight ? 4 : 3} className="small muted" style={{ textAlign: 'left', padding: '10px 6px' }}>
+        <td colSpan={showWeight ? 5 : 4} className="small muted" style={{ textAlign: 'left', padding: '10px 6px' }}>
           Skipped{why ? ` — ${describeSkip(why)}` : ''}
         </td>
       </tr>
@@ -535,7 +583,7 @@ function SetRow({ s, n, ex, prev, readOnly, showWeight, onToggle, onEdit, onMenu
   }
 
   return (
-    <tr className={s.done ? 'done' : ''}>
+    <tr className={s.done ? 'done' : current ? 'current' : ''}>
       {numberCell}
       <td>
         <button className="prev" disabled={readOnly || !prev}
@@ -544,11 +592,12 @@ function SetRow({ s, n, ex, prev, readOnly, showWeight, onToggle, onEdit, onMenu
             if (prev.weight != null) { setW(String(prev.weight)); void onEdit(s, 'actualWeight', String(prev.weight)); }
             if (prev.reps != null) { setR(String(prev.reps)); void onEdit(s, 'actualReps', String(prev.reps)); }
           }}>
-          {prev ? (ex.loadType === 'time' ? `${prev.reps}s` : `${fmtNum(prev.weight ?? 0)}×${prev.reps}`) : '—'}
+          {prev ? (ex.loadType === 'time' ? `${prev.reps}s` : `${fmtNum(prev.weight ?? 0)}${unit}×${prev.reps}`) : '—'}
         </button>
       </td>
+      <td className="col-target target">{target}</td>
       {showWeight && (
-        <td>
+        <td className="w-cell">
           <input
             inputMode="decimal" enterKeyHint="next" aria-label="Weight" disabled={readOnly} value={w}
             onFocus={(e) => e.currentTarget.select()}
@@ -558,7 +607,7 @@ function SetRow({ s, n, ex, prev, readOnly, showWeight, onToggle, onEdit, onMenu
           />
         </td>
       )}
-      <td>
+      <td className={showWeight ? 'r-cell' : ''}>
         <input
           inputMode="numeric" enterKeyHint="done" aria-label={ex.loadType === 'time' ? 'Seconds' : 'Reps'} disabled={readOnly} value={r}
           onFocus={(e) => e.currentTarget.select()}
@@ -567,7 +616,7 @@ function SetRow({ s, n, ex, prev, readOnly, showWeight, onToggle, onEdit, onMenu
           onBlur={() => void onEdit(s, 'actualReps', r)}
         />
       </td>
-      <td style={{ width: 50 }}>
+      <td style={{ width: 48 }}>
         {isPR && <span className="badge pr" style={{ display: 'block', marginBottom: 2 }}>PR</span>}
         <button className={`check ${s.done ? 'on' : ''}`} disabled={readOnly}
           onClick={() => void onToggle(s, { reps: curR != null ? Math.round(curR) : null, weight: curW })}

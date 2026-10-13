@@ -102,7 +102,7 @@ export function LoginPage({ linkError = null }: { linkError?: string | null }) {
         )}
         {mode === 'login' && (
           <div className="row" style={{ justifyContent: 'space-between' }}>
-            <button type="button" className="link-btn small" onClick={() => switchTo('magic')}>Email me a link instead</button>
+            <button type="button" className="link-btn small" onClick={() => switchTo('magic')}>Email me a link</button>
             <button type="button" className="link-btn small" onClick={() => switchTo('reset')}>Forgot password?</button>
           </div>
         )}
