@@ -385,7 +385,11 @@ interface LimitStats { user_month: number; all_month: number; last_hour: number;
 
 /** Spend and message counts, read with the service role (users can't see or change other users' rows). */
 async function limitStats(admin: Db, userId: string): Promise<LimitStats> {
-  const s = must(await admin.rpc('coach_limits', { p_user: userId })) as LimitStats;
+  const res = await admin.rpc('coach_limits', { p_user: userId });
+  if (res.error && /coach_limits/.test(res.error.message)) {
+    throw new Error('The coach needs a database update: apply the migration supabase/migrations/20261013000000_coach_lockdown.sql, then try again.');
+  }
+  const s = must(res) as LimitStats;
   return { user_month: Number(s.user_month), all_month: Number(s.all_month), last_hour: Number(s.last_hour), last_day: Number(s.last_day) };
 }
 

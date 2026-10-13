@@ -32,3 +32,6 @@ LANGUAGE sql STABLE SECURITY INVOKER SET search_path = public AS $$
 $$;
 REVOKE ALL ON FUNCTION coach_limits(uuid) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION coach_limits(uuid) TO service_role;
+
+-- Make the new function visible to the API right away.
+NOTIFY pgrst, 'reload schema';
