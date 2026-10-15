@@ -172,7 +172,7 @@ export function WorkoutPage() {
         <Sheet onClose={() => setTimerSheet(false)} title="Rest timer">
           <div className="chips">
             {[60, 90, 120, 180, 240, 300].map((sec) => (
-              <button key={sec} className="chip" onClick={() => { unlockAudio(); timer.start(sec, w.exercises.find((e) => e.id === activeId)?.name ?? w.title); setTimerSheet(false); }}>
+              <button key={sec} className="chip" onClick={() => { unlockAudio(); timer.start(sec, w.exercises.find((e) => e.id === activeId)?.name ?? w.title, w.id); setTimerSheet(false); }}>
                 {fmtDuration(sec)}
               </button>
             ))}
@@ -241,7 +241,7 @@ function ExerciseCard({ ex, units, readOnly, active, isLast, nextName, onLocalCh
         const label = next
           ? `${ex.name} — ${next.kind === 'warmup' ? 'warm-up' : `set ${working.indexOf(next) + 1} of ${working.length}`}`
           : `next: ${nextName ?? 'next exercise'}`;
-        timer.start(rest, label);
+        timer.start(rest, label, workoutId);
       }
     }
   }

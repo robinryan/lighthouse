@@ -1,11 +1,14 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useLocation, useNavigate } from 'react-router';
+import { activeWorkoutId } from '../api';
 import { fmtDuration } from '../format';
 
-interface TimerState { endsAt: number; duration: number; label: string }
+/** `workoutId`: the workout the rest belongs to, so the bar can take you back to it. */
+interface TimerState { endsAt: number; duration: number; label: string; workoutId?: number }
 interface TimerApi {
   timer: TimerState | null;
   remaining: number;
-  start: (seconds: number, label: string) => void;
+  start: (seconds: number, label: string, workoutId?: number) => void;
   adjust: (delta: number) => void;
   stop: () => void;
 }
@@ -100,10 +103,10 @@ export function RestTimerProvider({ children }: { children: ReactNode }) {
     return () => clearTimeout(clear);
   }, [remaining, timer]);
 
-  const start = useCallback((seconds: number, label: string) => {
+  const start = useCallback((seconds: number, label: string, workoutId?: number) => {
     fired.current = false;
     setNow(Date.now());
-    setTimer({ endsAt: Date.now() + seconds * 1000, duration: seconds, label });
+    setTimer({ endsAt: Date.now() + seconds * 1000, duration: seconds, label, workoutId });
   }, []);
   const adjust = useCallback((delta: number) => {
     setTimer((t) => (t ? { ...t, endsAt: Math.max(Date.now(), t.endsAt + delta * 1000), duration: Math.max(1, t.duration + delta) } : t));
@@ -122,17 +125,37 @@ export function useRestTimer() {
 
 export function RestTimerBar() {
   const { timer, remaining, adjust, stop } = useRestTimer();
+  const navigate = useNavigate();
+  const { pathname } = useLocation();
   if (!timer) return null;
   const finished = remaining <= 0;
   const pct = finished ? 100 : 100 - (remaining / timer.duration) * 100;
+  const onWorkout = /^\/workout\/\d+/.test(pathname);
+
+  // Tapping the time takes you back to the workout (or, if you're on it, to the exercise you're doing).
+  async function backToWorkout() {
+    const id = timer?.workoutId ?? await activeWorkoutId().catch(() => null);
+    if (id == null) { navigate('/'); return; }
+    if (pathname === `/workout/${id}`) {
+      document.querySelector('.ex-card.active')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } else {
+      navigate(`/workout/${id}`);
+    }
+  }
+
   return (
     <div className="timer-bar" role="timer" aria-live="polite">
       <div className={`timer-inner ${finished ? 'finished' : ''}`}>
-        <div className="timer-time">{finished ? 'Go!' : fmtDuration(remaining)}</div>
-        <div className="grow">
-          <div className="small muted">{finished ? 'Rest complete' : 'Rest'}</div>
-          <div className="small" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{timer.label}</div>
-        </div>
+        <button type="button" className="timer-open" onClick={() => void backToWorkout()}
+          aria-label={onWorkout ? 'Scroll to the current exercise' : 'Back to your workout'}>
+          <span className="timer-time">{finished ? 'Go!' : fmtDuration(remaining)}</span>
+          <span className="grow" style={{ minWidth: 0 }}>
+            <span className={`small timer-hint ${onWorkout ? 'muted' : 'link'}`}>
+              {onWorkout ? (finished ? 'Rest complete' : 'Rest') : 'Workout ›'}
+            </span>
+            <span className="small" style={{ display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{timer.label}</span>
+          </span>
+        </button>
         {!finished && <button className="btn sm" onClick={() => adjust(-15)} aria-label="Subtract 15 seconds">−15</button>}
         {!finished && <button className="btn sm" onClick={() => adjust(15)} aria-label="Add 15 seconds">+15</button>}
         <button className="btn sm" onClick={stop}>{finished ? 'Done' : 'Skip'}</button>
