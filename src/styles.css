@@ -236,7 +236,11 @@ label.field > span { font-weight: 600; }
 .bar-stub { height: 14px; width: 40px; background: #9aa3b2; border-radius: 3px; }
 
 .auth { max-width: 400px; margin: 8vh auto 0; }
-.logo { width: 72px; height: 72px; border-radius: 18px; }
+.logo { width: 84px; height: 84px; border-radius: 20px; }
+.brand { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.wordmark { font-size: 38px; font-weight: 900; letter-spacing: -0.03em; margin: 12px 0 2px; }
+.wordmark span { color: var(--accent-text); }
+.brand p { max-width: 320px; }
 .steps { display: flex; gap: 6px; margin-bottom: 16px; }
 .steps i { flex: 1; height: 4px; border-radius: 2px; background: var(--surface-2); }
 .steps i.on { background: var(--accent); }

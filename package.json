@@ -2,7 +2,7 @@
   "name": "lighthouse",
   "private": true,
   "version": "0.2.0",
-  "description": "Lighthouse — a strength-training PWA with an AI coach (React + Supabase)",
+  "description": "Gym Bestie — a strength-training PWA with an AI coach (React + Supabase)",
   "type": "module",
   "scripts": {
     "dev": "vite",

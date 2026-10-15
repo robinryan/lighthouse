@@ -85,8 +85,8 @@ export function RestTimerProvider({ children }: { children: ReactNode }) {
 
   // Countdown in the tab title, so it shows in the app switcher.
   useEffect(() => {
-    const base = 'Lighthouse';
-    document.title = timer ? (remaining > 0 ? `${fmtDuration(remaining)} · Rest` : 'Go! · Lighthouse') : base;
+    const base = 'Gym Bestie';
+    document.title = timer ? (remaining > 0 ? `${fmtDuration(remaining)} · Rest` : 'Go! · Gym Bestie') : base;
     return () => { document.title = base; };
   }, [timer, Math.ceil(remaining)]);
 

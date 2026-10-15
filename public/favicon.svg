@@ -1,13 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Gym Bestie: a heart-shaped kettlebell -->
+  <defs><clipPath id="floor"><rect x="0" y="0" width="512" height="430"/></clipPath></defs>
   <rect width="512" height="512" rx="112" fill="#0b0b0c"/>
-  <path d="M256 70 L300 150 L212 150 Z" fill="#ffc400"/>
-  <path d="M190 120 L120 95 M322 120 L392 95" stroke="#ffc400" stroke-width="16" stroke-linecap="round" opacity=".7"/>
-  <rect x="218" y="150" width="76" height="200" rx="10" fill="#ffffff"/>
-  <rect x="218" y="200" width="76" height="26" fill="#ff8a00"/>
-  <rect x="218" y="270" width="76" height="26" fill="#ff8a00"/>
-  <rect x="90" y="370" width="332" height="22" rx="11" fill="#ffffff"/>
-  <rect x="96" y="330" width="34" height="102" rx="8" fill="#ffc400"/>
-  <rect x="136" y="346" width="24" height="70" rx="6" fill="#ffc400"/>
-  <rect x="382" y="330" width="34" height="102" rx="8" fill="#ffc400"/>
-  <rect x="352" y="346" width="24" height="70" rx="6" fill="#ffc400"/>
+  <g transform="translate(0 12)">
+    <path d="M150 236 C138 74 374 74 362 236" fill="none" stroke="#ffffff" stroke-width="44" stroke-linecap="round"/>
+    <path clip-path="url(#floor)" transform="translate(0 0)" d="M256 446 C150 380 100 316 100 262 C100 206 144 172 192 172 C222 172 246 190 256 214 C266 190 290 172 320 172 C368 172 412 206 412 262 C412 316 362 380 256 446 Z" fill="#ffc400"/>
+    <path d="M150 262 C150 232 166 214 190 210" fill="none" stroke="#ffe278" stroke-width="14" stroke-linecap="round"/>
+  </g>
 </svg>

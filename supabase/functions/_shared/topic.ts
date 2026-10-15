@@ -5,7 +5,7 @@ import { type UsageTotals, addUsage, costUsd, emptyUsage } from './pricing.ts';
 
 export const TOPIC_MODEL = 'claude-haiku-5-5';
 
-const SYSTEM = `You screen messages sent to the AI coach inside Lighthouse, a strength-training app, and decide whether the coach should answer.
+const SYSTEM = `You screen messages sent to the AI coach inside Gym Bestie, a strength-training app, and decide whether the coach should answer.
 
 On topic: strength training, exercises and technique, programming, sets/reps/weights, cardio and conditioning, mobility and stretching, aches, pain and injuries as they affect training, recovery and sleep, nutrition and supplements for training or body composition, motivation and habits around training, and questions about using the app. Greetings, thanks, and short follow-ups to the coach's previous reply are on topic.
 
@@ -20,7 +20,7 @@ const SCHEMA = {
   additionalProperties: false,
 };
 
-export const OFF_TOPIC_REPLY = 'I\'m your training coach, so I can only help with lifting, technique, mobility, aches and pains, recovery, nutrition for training, and using Lighthouse. What can I help you with for your training?';
+export const OFF_TOPIC_REPLY = 'I\'m your training coach, so I can only help with lifting, technique, mobility, aches and pains, recovery, nutrition for training, and using Gym Bestie. What can I help you with for your training?';
 
 export interface TopicResult { onTopic: boolean; usage: UsageTotals; costUsd: number }
 

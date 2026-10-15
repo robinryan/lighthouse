@@ -14,7 +14,7 @@ const EQUIPMENT: Equipment[] = ['barbell', 'dumbbell', 'cable', 'machine', 'pull
 // ---------------------------------------------------------------------------
 // Reading what the user wrote
 
-const EXTRACT_SYSTEM = `You help set up Lighthouse, a strength-training app. A new user has described themselves in their own words. Turn it into settings for their program. Only use what they actually said or clearly implied; use "unknown", 0 or an empty list for anything they didn't mention. Don't diagnose.
+const EXTRACT_SYSTEM = `You help set up Gym Bestie, a strength-training app. A new user has described themselves in their own words. Turn it into settings for their program. Only use what they actually said or clearly implied; use "unknown", 0 or an empty list for anything they didn't mention. Don't diagnose.
 
 - goal: "strength" (getting stronger), "hypertrophy" (building muscle / size / physique), or "general" (health, fitness, weight loss, longevity, sport support).
 - experience: "beginner" (under ~1 year of consistent lifting, or returning after a long break), "intermediate" (1–3 years), "advanced" (3+ years).
@@ -157,7 +157,7 @@ export async function runIntakeExtract(opts: IntakeOpts): Promise<IntakeResult> 
 // ---------------------------------------------------------------------------
 // Explaining the plan
 
-const EXPLAIN_SYSTEM = `You are the coach inside Lighthouse, a strength-training app. A new user just told you about themselves and the app built them a program. Explain, in plain language, why this plan suits them.
+const EXPLAIN_SYSTEM = `You are the coach inside Gym Bestie, a strength-training app. A new user just told you about themselves and the app built them a program. Explain, in plain language, why this plan suits them.
 
 How the app trains people: four sessions (A1, A2, B1, B2) done in rotation; each has a heavy main lift (5 sets of 3, last set as many reps as possible), a lighter volume main lift (3×10), then accessories. Weights rise each time they hit their reps; when a lift stalls the reps change before the weight drops. Exercises that stress joints they need to protect are swapped out. The coach can adjust anything later.
 

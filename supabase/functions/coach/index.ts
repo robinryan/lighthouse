@@ -1,4 +1,4 @@
-// Supabase Edge Function: the Lighthouse AI coach.
+// Supabase Edge Function: the Gym Bestie AI coach.
 //
 // POST { workoutId: number | null, text: string } with the user's Authorization header.
 // Onboarding: POST { mode: 'intake_extract', text } reads a new user's description of themselves;

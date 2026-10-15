@@ -1,6 +1,6 @@
-# Lighthouse — strength training PWA with an AI coach
+# Gym Bestie — strength training PWA with an AI coach
 
-Lighthouse plans each day's lifting session, logs what you actually do, progresses the weights for you, and has a Claude-powered coach you can ask mid-workout ("my elbow hurts today — what should I do instead?").
+Gym Bestie plans each day's lifting session, logs what you actually do, progresses the weights for you, and has a Claude-powered coach you can ask mid-workout ("my elbow hurts today — what should I do instead?").
 
 It's an installable Progressive Web App (works offline at the gym) built with React + Vite, using **Supabase** for accounts, the database and the coach's server function. It deploys as a static site (Netlify, which is what Bolt publishes to).
 

@@ -68,10 +68,10 @@ export function LoginPage({ linkError = null }: { linkError?: string | null }) {
 
   return (
     <div className="auth stack">
-      <div className="center">
+      <div className="center brand">
         <img src="/icon-192.png" alt="" className="logo" />
-        <h1 style={{ marginTop: 12 }}>Lighthouse</h1>
-        <p className="muted">Your strength program, logbook and coach.</p>
+        <h1 className="wordmark">Gym <span>Bestie</span></h1>
+        <p className="muted">Your training buddy: a plan built around you, a logbook, and a coach in your pocket.</p>
       </div>
       <form className="card stack" onSubmit={submit}>
         {mode === 'register' && (

@@ -22,7 +22,7 @@ export function InstallPrompt() {
   return (
     <div className="card install-card">
       <div className="grow">
-        <b>Install Lighthouse</b>
+        <b>Install Gym Bestie</b>
         <div className="small muted">
           {evt ? 'Full screen, opens instantly between sets, works without signal.'
             : <>Tap <b>Share</b> then <b>Add to Home Screen</b> for full screen and offline use.</>}

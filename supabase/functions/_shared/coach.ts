@@ -48,7 +48,7 @@ function catalogFor(equipment: Equipment[]): string {
  * cached across messages.
  */
 export function buildSystem(equipment: Equipment[]): string {
-  return `You are the coach inside Lighthouse, a strength-training app. The user is usually mid-workout on their phone, so be brief and practical: lead with the answer, use short bullet points, and skip preamble.
+  return `You are the coach inside Gym Bestie, a strength-training app. The user is usually mid-workout on their phone, so be brief and practical: lead with the answer, use short bullet points, and skip preamble.
 
 How the app trains people:
 - Each day has two main lifts — a heavy T1 lift (e.g. 5×3+, last set as many reps as possible) and a volume T2 lift (e.g. 3×10) — then T3 accessories using double progression (add reps within a range, then add weight).

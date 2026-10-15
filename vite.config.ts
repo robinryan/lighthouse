@@ -9,8 +9,8 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'apple-touch-icon.png'],
       manifest: {
-        name: 'Lighthouse — Strength Coach',
-        short_name: 'Lighthouse',
+        name: 'Gym Bestie — Strength Training & Coach',
+        short_name: 'Gym Bestie',
         description: 'Plan, log and progress your lifting, with an AI coach.',
         theme_color: '#000000',
         background_color: '#000000',
