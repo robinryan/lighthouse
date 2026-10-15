@@ -365,6 +365,8 @@ export interface CoachUsage extends UsageTotals {
   /** Cost of the Haiku topic check, included in costUsd. */
   topicCostUsd?: number;
   offTopic?: boolean;
+  /** Onboarding: 'intake_extract' (reading the user's description, hidden) or 'plan' (explaining their plan). */
+  kind?: string;
 }
 
 export interface MessageRow {
@@ -372,6 +374,9 @@ export interface MessageRow {
   actions: CoachAction[]; sources: Array<{ url: string; title: string }>; created_at: string;
   usage: CoachUsage | null; cost_usd: number | null;
 }
+
+/** Bookkeeping rows (e.g. reading an onboarding description) that count toward limits but aren't part of the chat. */
+export const isHiddenMessage = (m: { usage?: { kind?: string } | null }) => m.usage?.kind === 'intake_extract';
 
 /** A spending cap or rate limit was hit; nothing was sent to the API. */
 export class CoachLimitError extends Error {
@@ -395,7 +400,7 @@ export const DEFAULT_LIMITS: CoachLimits = {
 interface LimitStats { user_month: number; all_month: number; last_hour: number; last_day: number }
 
 /** Spend and message counts, read with the service role (users can't see or change other users' rows). */
-async function limitStats(admin: Db, userId: string): Promise<LimitStats> {
+export async function limitStats(admin: Db, userId: string): Promise<LimitStats> {
   const res = await admin.rpc('coach_limits', { p_user: userId });
   if (res.error && /coach_limits/.test(res.error.message)) {
     throw new Error('The coach needs a database update: apply the migration supabase/migrations/20261013000000_coach_lockdown.sql, then try again.');
@@ -463,9 +468,10 @@ export async function runCoach(opts: {
   }
   const workout = targetId != null ? await loadWorkout(db, targetId) : null;
 
-  let historyQuery = db.from('coach_messages').select('role, content').order('id', { ascending: false }).limit(MAX_HISTORY);
+  let historyQuery = db.from('coach_messages').select('role, content, usage').order('id', { ascending: false }).limit(MAX_HISTORY + 1);
   historyQuery = workoutId == null ? historyQuery.is('workout_id', null) : historyQuery.eq('workout_id', workoutId);
-  const history = (must(await historyQuery) as Array<{ role: 'user' | 'assistant'; content: string }>).reverse();
+  const history = (must(await historyQuery) as Array<{ role: 'user' | 'assistant'; content: string; usage: { kind?: string } | null }>)
+    .filter((m) => !isHiddenMessage(m)).slice(0, MAX_HISTORY).reverse();
 
   // Screen the message with Haiku (fractions of a cent) while the context loads.
   const lastReply = history.findLast((m) => m.role === 'assistant')?.content;

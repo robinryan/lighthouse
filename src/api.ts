@@ -8,7 +8,7 @@ import { type SetPatch, updateSet } from './data/training';
 export * from './data/types';
 export * from './data/training';
 export * from './data/stats';
-export { listMessages, askCoach, applyAction, applySessionActions, undoAction, makeSwapPermanent, coachUsageThisMonth, CoachNotConfiguredError, type CoachMonthUsage } from './data/coach';
+export { listMessages, askCoach, readIntake, explainPlan, latestPlanExplanation, applyAction, applySessionActions, undoAction, makeSwapPermanent, coachUsageThisMonth, CoachNotConfiguredError, type CoachMonthUsage } from './data/coach';
 export { db, isConfigured, siteUrl, takeAuthLinkError } from './data/client';
 export { NetworkError };
 
@@ -84,3 +84,5 @@ export {
 } from './data/health';
 export { SKIP_REASONS, JOINT_NAMES, describeSkip, parseSkip, type SkipFeedback, type SkipReason } from '../supabase/functions/_shared/health.ts';
 export { EXERCISE_TIPS, videoUrl } from '../supabase/functions/_shared/exerciseTips.ts';
+export { basicPlanExplanation } from '../supabase/functions/_shared/plan.ts';
+export type { IntakeResult } from '../supabase/functions/_shared/intake.ts';

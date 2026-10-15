@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router';
-import { getProgramView, localDate, regenerateProgram, setNextDay, setSlotExercise } from '../api';
+import { basicPlanExplanation, getProgram, getProgramView, latestPlanExplanation, localDate, regenerateProgram, setNextDay, setSlotExercise } from '../api';
+import { Markdown } from '../components/CoachChat';
 import { useAsync, useSession } from '../hooks';
 import { fmtNum } from '../format';
 import { ExercisePicker } from '../components/ExercisePicker';
@@ -10,6 +11,13 @@ export function ProgramPage() {
   const { profile } = useSession();
   const date = localDate();
   const { data, reload } = useAsync(() => getProgramView(date), [date]);
+  // The coach's explanation from onboarding, or the built-in one for the current program.
+  const { data: why } = useAsync(async () => {
+    const coach = await latestPlanExplanation().catch(() => null);
+    if (coach) return { text: coach.content, byCoach: true, date: coach.createdAt };
+    const stored = await getProgram();
+    return stored ? { text: basicPlanExplanation(profile, stored.program), byCoach: false, date: '' } : null;
+  }, [data]);
   const [editing, setEditing] = useState<{ slotId: string; exerciseId: string } | null>(null);
 
   if (!data) return <p className="muted">Loading…</p>;
@@ -27,6 +35,13 @@ export function ProgramPage() {
         then accessories. Weights go up every time you hit your reps; a missed session switches to an easier rep scheme
         before ever lowering the weight. Tap a name to watch a demo, or Change to swap it.
       </p>
+      {why && (
+        <details className="card why-plan">
+          <summary><b>Why this plan fits you</b></summary>
+          <div style={{ marginTop: 8 }}><Markdown text={why.text} /></div>
+          {why.byCoach && <div className="tiny muted">Written by your coach{why.date ? ` on ${new Date(why.date).toLocaleDateString()}` : ''}. If you've changed things since, ask the coach to review.</div>}
+        </details>
+      )}
       {data.days.map((d) => (
         <div key={d.dayIndex} className="card">
           <div className="spread" style={{ marginBottom: 6 }}>

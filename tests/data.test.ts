@@ -543,3 +543,64 @@ test('coach changes to today\'s workout apply automatically and can be undone', 
   assert.deepEqual(msg.actions.map((a) => a.status), ['undone', 'undone', 'undone', 'pending']);
   await assert.rejects(undoAction(reply.id, 0), /Nothing to undo/);
 });
+
+test('onboarding in your own words: read, pre-fill, health profile, plan explained', { skip: !ADMIN_URL && 'TEST_DATABASE_URL not set' }, async () => {
+  const { runIntakeExtract, runIntakeExplain } = await import('../supabase/functions/_shared/intake.ts');
+  const { latestPlanExplanation } = await import('../src/data/coach.ts');
+  const H = { id: '88888888-8888-4888-8888-888888888888', email: 'h@example.com' };
+  await pool.query(`INSERT INTO auth.users (id, email, raw_user_meta_data) VALUES ($1, $2, '{"name":"H"}')`, [H.id, H.email]);
+  const asH = fakeSupabase(pool, H);
+  setDb(asH);
+  const text = 'I\'m 42 with a desk job. Had knee surgery last year and my physio said no deep barbell squats yet. Want to get fitter and stronger, 3 days a week, 45 minutes.';
+
+  const requests: any[] = [];
+  const extracted = { goal: 'general', experience: 'beginner', days_per_week: 3, session_minutes: 45, equipment: [],
+    joints: [{ joint: 'knee', severity: 3, note: 'knee surgery last year' }],
+    avoid_exercises: [{ exercise_id: 'squat', note: 'physio: no deep barbell squats yet' }],
+    other_notes: ['desk job'], summary: 'Here\'s what I took from that: knee surgery, 3×45 min a week, general fitness.' };
+  const anthropic = { beta: { messages: { create: async (req: any) => {
+    requests.push(structuredClone(req));
+    if (req.output_config?.format) return { stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(extracted) }], usage: { input_tokens: 3000, output_tokens: 300 } };
+    return { stop_reason: 'end_turn', content: [{ type: 'text', text: '**What I heard** — knee surgery last year…\n**Why it fits you**\n- Leg press instead of squats.' }], usage: { input_tokens: 1500, output_tokens: 400 } };
+  } } } };
+
+  // 1. Read the description.
+  const r = await runIntakeExtract({ db: asH, admin: asAdmin, userId: H.id, anthropic, text });
+  assert.equal(r.goal, 'general');
+  assert.equal(r.daysPerWeek, 3);
+  assert.deepEqual(r.limitations, ['knee']);
+  assert.equal(requests[0].output_config.format.type, 'json_schema');
+  assert.match(requests[0].messages[0].content, /<about_me>\nI'm 42/);
+  // It's recorded (counts toward limits and spending) but isn't shown in the chat.
+  const limits = (await asAdmin.rpc('coach_limits', { p_user: H.id })).data;
+  assert.equal(limits.last_hour, 1);
+  assert.ok(limits.user_month > 0, 'reading the description counts toward spending');
+  assert.equal((await listMessages(null)).length, 0);
+
+  // 2. Build the program with what was read: the knee is protected and squats are steered around.
+  await T.completeOnboarding({ ...profile({ name: 'H', goal: r.goal!, experience: r.experience!, daysPerWeek: r.daysPerWeek!, sessionMinutes: r.sessionMinutes! }),
+    limitations: r.limitations, limitationNotes: r.limitationNotes }, {}, r.healthNotes);
+  const H2 = await import('../src/data/health.ts');
+  const notes = await H2.listHealthNotes();
+  assert.deepEqual(notes.map((n) => `${n.kind}:${n.source}`).sort(), ['avoid:user', 'joint:user', 'note:user']);
+  const program = (await T.getProgram())!.program;
+  assert.ok(!program.days.flatMap((d) => d.slots).some((s) => s.exerciseId === 'squat'), 'no barbell back squat');
+
+  // 3. Explain the plan; it becomes the first exchange in the coach chat.
+  const reply = await runIntakeExplain({ db: asH, admin: asAdmin, userId: H.id, anthropic, text });
+  assert.match(reply.content, /What I heard/);
+  const prompt = requests[1].messages[0].content;
+  assert.match(prompt, /<plan>[\s\S]*A1 /, 'the real program is described');
+  assert.match(prompt, /instead of Back Squat/, 'swaps are spelled out');
+  assert.match(prompt, /knee surgery last year/);
+  const chat = await listMessages(null);
+  assert.deepEqual(chat.map((m) => m.role), ['user', 'assistant']);
+  assert.equal(chat[0].content, text);
+  assert.equal((await latestPlanExplanation())!.id, reply.id);
+
+  // The hidden description isn't repeated in the coach's conversation history.
+  const chatReq: any[] = [];
+  const chatAnthropic = { messages: { create: ON_TOPIC }, beta: { messages: { stream: (req: any) => { chatReq.push(structuredClone(req)); return { finalMessage: async () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: 'ok' }], usage: {} }) }; } } } };
+  await runCoach({ db: asH, admin: asAdmin, userId: H.id, anthropic: chatAnthropic, workoutId: null, text: 'Why no squats?', today: '2026-10-15' });
+  assert.deepEqual(chatReq[0].messages.map((m: any) => m.role), ['user', 'assistant', 'user']);
+});

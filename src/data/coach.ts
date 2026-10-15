@@ -1,4 +1,5 @@
-import { SESSION_ACTIONS, type CoachAction, type MessageRow } from '../../supabase/functions/_shared/coach.ts';
+import { SESSION_ACTIONS, isHiddenMessage, type CoachAction, type MessageRow } from '../../supabase/functions/_shared/coach.ts';
+import type { IntakeResult } from '../../supabase/functions/_shared/intake.ts';
 import { must } from '../../supabase/functions/_shared/queries.ts';
 import { db } from './client';
 import {
@@ -16,14 +17,15 @@ function toMessage(r: MessageRow): CoachMessage {
 export async function listMessages(workoutId: number | null): Promise<CoachMessage[]> {
   let q = db().from('coach_messages').select('*').order('id');
   q = workoutId == null ? q.is('workout_id', null) : q.eq('workout_id', workoutId);
-  return (must(await q) as MessageRow[]).map(toMessage);
+  return (must(await q) as MessageRow[]).filter((m) => !isHiddenMessage(m)).map(toMessage);
 }
 
 /** Thrown when the coach edge function isn't deployed or has no API key yet. */
 export class CoachNotConfiguredError extends Error {}
 
-export async function askCoach(workoutId: number | null, text: string, research = false): Promise<CoachMessage> {
-  const { data, error } = await db().functions.invoke('coach', { body: { workoutId, text, research } });
+/** Call the coach edge function, turning its errors into readable ones. */
+async function invokeCoach<T>(body: Record<string, unknown>): Promise<T> {
+  const { data, error } = await db().functions.invoke('coach', { body });
   if (error) {
     // supabase-js wraps non-2xx responses; pull out the function's own message when there is one.
     const ctx = (error as { context?: Response }).context;
@@ -31,9 +33,9 @@ export async function askCoach(workoutId: number | null, text: string, research 
     let code: string | undefined;
     if (ctx && typeof ctx.json === 'function') {
       try {
-        const body = await ctx.json();
-        message = body.error ?? message;
-        code = body.code;
+        const b = await ctx.json();
+        message = b.error ?? message;
+        code = b.code;
       } catch { /* not JSON */ }
     }
     if (code === 'not_configured' || (ctx && ctx.status === 404)) {
@@ -45,7 +47,27 @@ export async function askCoach(workoutId: number | null, text: string, research 
     }
     throw new Error(message);
   }
-  return toMessage(data as MessageRow);
+  return data as T;
+}
+
+export async function askCoach(workoutId: number | null, text: string, research = false): Promise<CoachMessage> {
+  return toMessage(await invokeCoach<MessageRow>({ workoutId, text, research }));
+}
+
+/** Onboarding: read a new user's description of their health, goals and history. */
+export const readIntake = (text: string) => invokeCoach<IntakeResult>({ mode: 'intake_extract', text });
+
+/** Onboarding: the coach explains the plan it built; stored as the first message in the coach chat. */
+export async function explainPlan(text: string): Promise<CoachMessage> {
+  return toMessage(await invokeCoach<MessageRow>({ mode: 'intake_explain', text }));
+}
+
+/** The most recent "why this plan fits you" explanation, if the coach wrote one. */
+export async function latestPlanExplanation(): Promise<CoachMessage | null> {
+  const rows = must(await db().from('coach_messages').select('*').eq('role', 'assistant').is('workout_id', null)
+    .order('id', { ascending: false }).limit(50)) as MessageRow[];
+  const row = rows.find((r) => r.usage?.kind === 'plan');
+  return row ? toMessage(row) : null;
 }
 
 async function loadActions(messageId: number): Promise<CoachAction[]> {

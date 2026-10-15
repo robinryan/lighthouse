@@ -65,3 +65,46 @@ test('coach request adapts to the model (Haiku: basic web search, no fallbacks)'
   assert.deepEqual(haiku.fallback, {});
   assert.equal(haiku.tools.length, opus.tools.length);
 });
+
+test('intake: what Claude read becomes safe profile settings and health notes', async () => {
+  const { toIntakeResult } = await import('../supabase/functions/_shared/intake.ts');
+  const r = toIntakeResult({
+    goal: 'general', experience: 'unknown', days_per_week: 9, session_minutes: 50,
+    equipment: ['dumbbell', 'band', 'spaceship'],
+    joints: [{ joint: 'knee', severity: 3, note: 'ACL repair 2023' }, { joint: 'shoulder', severity: 1, note: 'old tweak' }, { joint: 'nose', severity: 2, note: '' }],
+    avoid_exercises: [{ exercise_id: 'squat', note: 'physio said no deep squats' }, { exercise_id: 'made_up', note: '' }],
+    other_notes: ['desk job', ''],
+    summary: 'Here\'s what I took from that: knee surgery, general fitness.',
+  });
+  assert.equal(r.goal, 'general');
+  assert.equal(r.experience, undefined, 'unknown is left for the user');
+  assert.equal(r.daysPerWeek, 6, 'clamped');
+  assert.equal(r.sessionMinutes, 45, 'nearest option');
+  assert.deepEqual(r.equipment, ['dumbbell', 'band']);
+  assert.deepEqual(r.limitations, ['knee'], 'only joints that matter now are protected in the program');
+  assert.deepEqual(r.healthNotes.map((n) => `${n.kind}:${n.joint ?? n.exercise_id ?? n.note}`), ['joint:knee', 'joint:shoulder', 'avoid:squat', 'note:desk job']);
+  assert.match(r.limitationNotes, /ACL repair/);
+  const empty = toIntakeResult({ goal: 'unknown', experience: 'unknown', days_per_week: 0, session_minutes: 0, equipment: [], joints: [], avoid_exercises: [], other_notes: [], summary: '' });
+  assert.equal(empty.daysPerWeek, undefined);
+  assert.equal(empty.equipment, undefined, 'no equipment mentioned keeps the user\'s choice');
+});
+
+test('plan explanation: ties the plan to the profile and names swaps for sore joints', async () => {
+  const { generateProgram } = await import('../supabase/functions/_shared/engine.ts');
+  const { basicPlanExplanation, healthSwaps, describeProgram } = await import('../supabase/functions/_shared/plan.ts');
+  const profile = { units: 'kg' as const, experience: 'beginner' as const, goal: 'hypertrophy' as const, daysPerWeek: 3, sessionMinutes: 45,
+    equipment: ['barbell', 'dumbbell', 'cable', 'machine', 'pullup_bar', 'band'] as any, limitations: ['knee'] as any, bodyweight: 80 };
+  const program = generateProgram(profile);
+  const swaps = healthSwaps(profile, program);
+  assert.ok(swaps.length > 0, 'knee limitation changes something');
+  const text = basicPlanExplanation(profile, program);
+  assert.match(text, /building muscle/);
+  assert.match(text, /3 days a week/);
+  assert.match(text, /about every 9 days/);
+  assert.match(text, /45 minutes/);
+  assert.match(text, /fairly new/);
+  assert.match(text, /knees/);
+  assert.ok(text.includes(`${swaps[0].to} instead of ${swaps[0].from}`));
+  assert.equal(healthSwaps({ ...profile, limitations: [] }, generateProgram({ ...profile, limitations: [] })).length, 0);
+  assert.match(describeProgram(program), /^A1 /);
+});

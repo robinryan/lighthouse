@@ -1,6 +1,8 @@
 // Supabase Edge Function: the Lighthouse AI coach.
 //
 // POST { workoutId: number | null, text: string } with the user's Authorization header.
+// Onboarding: POST { mode: 'intake_extract', text } reads a new user's description of themselves;
+// POST { mode: 'intake_explain', text } explains the program built for them.
 // Requires the ANTHROPIC_API_KEY secret (Supabase dashboard → Edge Functions → Secrets).
 // SUPABASE_URL, SUPABASE_ANON_KEY and SUPABASE_SERVICE_ROLE_KEY are provided by Supabase.
 // Optional secrets (0 = no limit):
@@ -13,6 +15,7 @@
 import Anthropic from 'npm:@anthropic-ai/sdk@0.132.1';
 import { createClient } from 'npm:@supabase/supabase-js@2.117.3';
 import { CoachLimitError, type CoachLimits, DEFAULT_LIMITS, MAX_MESSAGE_CHARS, runCoach } from '../_shared/coach.ts';
+import { MAX_INTAKE_CHARS, runIntakeExplain, runIntakeExtract } from '../_shared/intake.ts';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -52,7 +55,7 @@ Deno.serve(async (req) => {
   const { data: userData, error: userError } = await db.auth.getUser(authorization.replace(/^Bearer\s+/i, ''));
   if (userError || !userData.user) return json({ error: 'Not signed in' }, 401);
 
-  let body: { workoutId?: unknown; text?: unknown; research?: unknown };
+  let body: { workoutId?: unknown; text?: unknown; research?: unknown; mode?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -60,7 +63,10 @@ Deno.serve(async (req) => {
   }
   const text = typeof body.text === 'string' ? body.text.trim() : '';
   const workoutId = typeof body.workoutId === 'number' && Number.isInteger(body.workoutId) && body.workoutId > 0 ? body.workoutId : null;
-  if (!text || text.length > MAX_MESSAGE_CHARS) return json({ error: `Message must be 1–${MAX_MESSAGE_CHARS} characters` }, 400);
+  const mode = body.mode === 'intake_extract' || body.mode === 'intake_explain' ? body.mode : 'chat';
+  if (mode === 'chat' && (!text || text.length > MAX_MESSAGE_CHARS)) return json({ error: `Message must be 1–${MAX_MESSAGE_CHARS} characters` }, 400);
+  if (mode !== 'chat' && text.length > MAX_INTAKE_CHARS) return json({ error: `Please keep it under ${MAX_INTAKE_CHARS} characters` }, 400);
+  if (mode === 'intake_extract' && !text) return json({ error: 'Tell me a little about yourself first' }, 400);
 
   try {
     const anthropic = new Anthropic({ apiKey });
@@ -71,11 +77,11 @@ Deno.serve(async (req) => {
       hourly: numberEnv('COACH_HOURLY_LIMIT', DEFAULT_LIMITS.hourly),
       daily: numberEnv('COACH_DAILY_LIMIT', DEFAULT_LIMITS.daily),
     };
-    const reply = await runCoach({
-      db, admin, userId: userData.user.id, anthropic, workoutId, text, limits,
-      model: Deno.env.get('COACH_MODEL') ?? undefined,
-      research: body.research === true,
-    });
+    const model = Deno.env.get('COACH_MODEL') ?? undefined;
+    const userId = userData.user.id;
+    if (mode === 'intake_extract') return json(await runIntakeExtract({ db, admin, userId, anthropic, model, text, limits }));
+    if (mode === 'intake_explain') return json(await runIntakeExplain({ db, admin, userId, anthropic, model, text, limits }));
+    const reply = await runCoach({ db, admin, userId, anthropic, workoutId, text, limits, model, research: body.research === true });
     return json(reply);
   } catch (err) {
     if (err instanceof CoachLimitError) {

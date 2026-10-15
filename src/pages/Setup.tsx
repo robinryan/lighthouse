@@ -1,6 +1,10 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router';
-import { completeOnboarding, type Equipment, type Joint, type Profile } from '../api';
+import {
+  basicPlanExplanation, CoachNotConfiguredError, completeOnboarding, explainPlan, getProgram, getProgramView, localDate, readIntake,
+  type Equipment, type IntakeResult, type Joint, type Profile,
+} from '../api';
+import { Markdown } from '../components/CoachChat';
 import { EQUIPMENT_LABELS, JOINT_LABELS } from '../format';
 import { useSession } from '../hooks';
 
@@ -109,6 +113,11 @@ const LIFTS = [
   { key: 'ohp', name: 'Overhead press' },
 ] as const;
 
+const ABOUT_PLACEHOLDER = 'e.g. "I\'m 42, desk job, used to run but my knees ache now. Want to get stronger and lose a bit of weight. ' +
+  'Hurt my lower back deadlifting years ago. Can train 3 mornings a week for about 45 minutes at a commercial gym."';
+
+type PlanView = { explanation: string; byCoach: boolean; note: string | null; days: NonNullable<Awaited<ReturnType<typeof getProgramView>>>['days'] };
+
 export function SetupPage() {
   const { profile, refreshProfile } = useSession();
   const navigate = useNavigate();
@@ -117,16 +126,70 @@ export function SetupPage() {
   const [five, setFive] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // In their own words: health, goals, past setbacks, schedule.
+  const [about, setAbout] = useState('');
+  const [intake, setIntake] = useState<{ text: string; result: IntakeResult } | null>(null);
+  const [intakeNote, setIntakeNote] = useState<string | null>(null);
+  const [touched, setTouched] = useState<Set<string>>(new Set());
+  const [plan, setPlan] = useState<PlanView | null>(null);
   const steps = ['goals', 'schedule', 'equipment', 'body', 'lifts'] as const;
+
+  /** Fill in the next steps from what the coach read. Choices the user made on this screen win. */
+  function applyIntake(r: IntakeResult) {
+    setDraft((d) => ({
+      ...d,
+      goal: !touched.has('goal') && r.goal ? r.goal : d.goal,
+      experience: !touched.has('experience') && r.experience ? r.experience : d.experience,
+      daysPerWeek: r.daysPerWeek ?? d.daysPerWeek,
+      sessionMinutes: r.sessionMinutes ?? d.sessionMinutes,
+      equipment: r.equipment ?? d.equipment,
+      limitations: [...new Set([...d.limitations, ...r.limitations])],
+      limitationNotes: d.limitationNotes || r.limitationNotes,
+    }));
+  }
+
+  async function next() {
+    setError(null);
+    const text = about.trim();
+    if (step === 0 && text && text !== intake?.text) {
+      setBusy(true);
+      try {
+        const result = await readIntake(text);
+        setIntake({ text, result });
+        setIntakeNote(null);
+        applyIntake(result);
+      } catch (e) {
+        setIntake(null);
+        setIntakeNote(e instanceof CoachNotConfiguredError
+          ? 'The AI coach isn\'t set up yet, so I couldn\'t read that automatically. Fill in the next few steps instead.'
+          : `I couldn't read that automatically (${(e as Error).message}). Fill in the next few steps instead.`);
+      } finally {
+        setBusy(false);
+      }
+    }
+    setStep(step + 1);
+  }
 
   async function submit() {
     setBusy(true);
     setError(null);
     try {
       const fiveRMs = Object.fromEntries(LIFTS.map((l) => [l.key, Number(five[l.key]) > 0 ? Number(five[l.key]) : null]));
-      await completeOnboarding({ ...draft, onboarded: true }, fiveRMs);
-      await refreshProfile();
-      navigate('/', { replace: true });
+      await completeOnboarding({ ...draft, onboarded: true }, fiveRMs, intake?.text === about.trim() ? intake.result.healthNotes : []);
+      const [stored, view] = await Promise.all([getProgram(), getProgramView(localDate())]);
+      const basic = basicPlanExplanation(draft, stored!.program);
+      let explanation = basic;
+      let byCoach = false;
+      let note: string | null = null;
+      if (about.trim()) {
+        try {
+          explanation = (await explainPlan(about.trim())).content;
+          byCoach = true;
+        } catch {
+          note = 'The coach couldn\'t write a personal explanation right now, so here\'s the short version. You can ask it about your plan any time.';
+        }
+      }
+      setPlan({ explanation, byCoach, note, days: view?.days ?? [] });
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -134,11 +197,43 @@ export function SetupPage() {
     }
   }
 
+  async function start() {
+    await refreshProfile();
+    navigate('/', { replace: true });
+  }
+
+  if (plan) {
+    return (
+      <div className="stack">
+        <h1>Your plan</h1>
+        {plan.note && <p className="notice">{plan.note}</p>}
+        <div className="card">
+          <Markdown text={plan.explanation} />
+          {plan.byCoach && <div className="tiny muted" style={{ marginTop: 6 }}>Written by your coach from what you told it. It's also saved in the Coach tab, so you can ask follow-up questions.</div>}
+        </div>
+        {plan.days.map((d) => (
+          <div key={d.dayIndex} className="card tight">
+            <b>{d.key} · {d.name}</b>
+            <div className="small muted">{d.exercises.map((e) => `${e.name}${e.tier === 'T3' ? '' : ` (${e.scheme})`}`).join(' · ')}</div>
+          </div>
+        ))}
+        <button className="btn primary block" onClick={start}>Start training</button>
+        <p className="small muted center">You can swap any exercise on the Program page, or ask the coach to adjust things.</p>
+      </div>
+    );
+  }
+
   const current = steps[step];
   return (
     <div className="stack">
       <div className="steps">{steps.map((s, i) => <i key={s} className={i <= step ? 'on' : ''} />)}</div>
       <h1>{['What are you training for?', 'Your schedule', 'Equipment & joints', 'About you', 'Your current strength'][step]}</h1>
+      {step > 0 && step < 4 && intake && (
+        <div className="notice">
+          {intake.result.summary || 'I\'ve read what you wrote.'} I've filled in the answers below; change anything that's off.
+        </div>
+      )}
+      {step === 1 && intakeNote && <div className="notice">{intakeNote}</div>}
       {current === 'lifts' ? (
         <div className="stack">
           <p className="muted">
@@ -153,13 +248,31 @@ export function SetupPage() {
           ))}
         </div>
       ) : (
-        <ProfileFields draft={draft} set={setDraft} section={current} />
+        <ProfileFields draft={draft} section={current} set={(d) => {
+          if (step === 0) {
+            const t = new Set(touched);
+            if (d.goal !== draft.goal) t.add('goal');
+            if (d.experience !== draft.experience) t.add('experience');
+            setTouched(t);
+          }
+          setDraft(d);
+        }} />
+      )}
+      {step === 0 && (
+        <label className="field">
+          <span>Or tell me in your own words <span className="muted" style={{ fontWeight: 400 }}>(optional)</span></span>
+          <span className="small muted" style={{ fontWeight: 400 }}>
+            Your current health, what you want to achieve, injuries or past setbacks, how often you can train. I'll set up the
+            next steps from it and explain why your plan fits you.
+          </span>
+          <textarea className="about-box" rows={6} maxLength={2000} placeholder={ABOUT_PLACEHOLDER} value={about} onChange={(e) => setAbout(e.target.value)} />
+        </label>
       )}
       {error && <p className="error">{error}</p>}
       <div className="row">
-        {step > 0 && <button className="btn" onClick={() => setStep(step - 1)}>Back</button>}
+        {step > 0 && <button className="btn" onClick={() => setStep(step - 1)} disabled={busy}>Back</button>}
         {step < steps.length - 1
-          ? <button className="btn primary grow" onClick={() => setStep(step + 1)}>Next</button>
+          ? <button className="btn primary grow" onClick={next} disabled={busy}>{busy ? 'Reading what you wrote…' : 'Next'}</button>
           : <button className="btn primary grow" onClick={submit} disabled={busy}>{busy ? 'Building your plan…' : 'Build my program'}</button>}
       </div>
     </div>

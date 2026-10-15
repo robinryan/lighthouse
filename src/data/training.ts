@@ -13,6 +13,7 @@ import {
   type DoneSetRow, type FullProfile, type SetRow, type StoredProgram, type WexRow, type WorkoutRow,
   loadProfile, loadProgram, loadWorkout, must, selectAll,
 } from '../../supabase/functions/_shared/queries.ts';
+import type { NewHealthNote } from '../../supabase/functions/_shared/health.ts';
 import { currentUserId, db } from './client';
 import type { DayPreview, FinishSummary, Today, Workout, WorkoutListItem } from './types';
 
@@ -76,13 +77,7 @@ export async function saveProgram(sp: StoredProgram) {
 export async function regenerateProgram() {
   const profile = await getProfile();
   const existing = await getProgram();
-  // Fold the health profile in: strongly sensitive joints count as limitations, and avoided exercises are steered around.
-  const { getHealthSummary } = await import('./health');
-  const health = await getHealthSummary(profile);
-  const limitations = [...new Set([...profile.limitations,
-    ...(Object.entries(health.joints) as Array<[typeof profile.limitations[number], number]>).filter(([, s]) => s >= 2).map(([j]) => j)])];
-  const avoid = new Set([...health.avoid.keys(), ...health.dislike]);
-  await saveProgram({ program: generateProgram({ ...profile, limitations }, avoid), nextDay: existing?.nextDay ?? 0, fiveRMs: existing?.fiveRMs ?? {} });
+  await saveProgram({ program: await programFor(profile), nextDay: existing?.nextDay ?? 0, fiveRMs: existing?.fiveRMs ?? {} });
 }
 
 export async function setSlotExercise(slotId: string, exerciseId: string) {
@@ -101,11 +96,31 @@ export async function setNextDay(dayIndex: number) {
   await saveProgram({ ...sp, nextDay: dayIndex });
 }
 
-export async function completeOnboarding(profile: FullProfile, fiveRMs: FiveRMs) {
+/**
+ * Save the profile and build the first program. `healthNotes` (e.g. read from the user's own
+ * description) go into the health profile first, so the program already steers around them.
+ */
+export async function completeOnboarding(
+  profile: FullProfile, fiveRMs: FiveRMs,
+  healthNotes: Array<Pick<NewHealthNote, 'kind' | 'joint' | 'exercise_id' | 'severity' | 'note'>> = [],
+) {
   await saveProfile({ ...profile, onboarded: true });
   const uid = await currentUserId();
   must(await db().from('lift_states').delete().eq('user_id', uid));
-  await saveProgram({ program: generateProgram(profile), nextDay: 0, fiveRMs });
+  const { addHealthNotes } = await import('./health');
+  await addHealthNotes(healthNotes.map((n) => ({ ...n, source: 'user' as const, workout_id: null, expires_at: null })));
+  await saveProgram({ program: await programFor(profile), nextDay: 0, fiveRMs });
+}
+
+/** The program for a profile, with the health profile folded in. */
+async function programFor(profile: FullProfile) {
+  // Strongly sensitive joints count as limitations, and avoided or disliked exercises are steered around.
+  const { getHealthSummary } = await import('./health');
+  const health = await getHealthSummary(profile);
+  const limitations = [...new Set([...profile.limitations,
+    ...(Object.entries(health.joints) as Array<[typeof profile.limitations[number], number]>).filter(([, s]) => s >= 2).map(([j]) => j)])];
+  const avoid = new Set([...health.avoid.keys(), ...health.dislike]);
+  return generateProgram({ ...profile, limitations }, avoid);
 }
 
 // ---------------------------------------------------------------------------
