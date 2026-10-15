@@ -1,8 +1,8 @@
-import type { CoachAction, MessageRow } from '../../supabase/functions/_shared/coach.ts';
+import { SESSION_ACTIONS, type CoachAction, type MessageRow } from '../../supabase/functions/_shared/coach.ts';
 import { must } from '../../supabase/functions/_shared/queries.ts';
 import { db } from './client';
 import {
-  addExerciseToWorkout, adjustLoad, getProfile, saveProfile, setSlotExercise, swapExercise,
+  addExerciseToWorkout, adjustLoad, getProfile, removeWorkoutExercise, restoreTargets, saveProfile, setSlotExercise, swapExercise,
 } from './training';
 import type { CoachMessage } from './types';
 
@@ -48,10 +48,106 @@ export async function askCoach(workoutId: number | null, text: string, research 
   return toMessage(data as MessageRow);
 }
 
-export async function applyAction(messageId: number, index: number, dismiss: boolean): Promise<CoachAction> {
+async function loadActions(messageId: number): Promise<CoachAction[]> {
   const row = must(await db().from('coach_messages').select('actions').eq('id', messageId).maybeSingle()) as { actions: CoachAction[] } | null;
   if (!row) throw new Error('Message not found');
-  const actions = row.actions;
+  return row.actions;
+}
+const saveActions = async (messageId: number, actions: CoachAction[]) =>
+  must(await db().from('coach_messages').update({ actions }).eq('id', messageId));
+
+/**
+ * Carry out a change to today's workout and remember how to undo it.
+ * `todayOnly` keeps a "program" swap to this session until the user says otherwise.
+ */
+async function runSessionAction(a: CoachAction, todayOnly: boolean) {
+  switch (a.type) {
+    case 'swap': {
+      const scope = todayOnly ? 'today' : a.scope;
+      const r = await swapExercise(a.workoutExerciseId, a.exerciseId, scope);
+      a.undo = { kind: 'swap', workoutExerciseId: r.id, exerciseId: r.replaced };
+      if (a.scope === 'program') a.permanent = scope === 'program';
+      break;
+    }
+    case 'load':
+      a.undo = { kind: 'load', weights: await adjustLoad(a.workoutExerciseId, a.percent) };
+      break;
+    case 'add': {
+      const id = await addExerciseToWorkout(a.workoutId, a.exerciseId, { sets: a.sets, reps: a.reps, restSeconds: a.restSeconds, note: a.note });
+      a.undo = { kind: 'add', workoutExerciseId: id };
+      break;
+    }
+    default:
+      throw new Error('Not a change to today\'s workout');
+  }
+  a.status = 'applied';
+}
+
+const isSessionAction = (a: CoachAction) => (SESSION_ACTIONS as readonly string[]).includes(a.type);
+
+/**
+ * Apply a coach reply's changes to the workout in progress straight away (swaps, load changes,
+ * added exercises). Future-session changes stay as buttons. Returns how many were applied.
+ */
+export async function applySessionActions(messageId: number): Promise<number> {
+  const actions = await loadActions(messageId);
+  let applied = 0;
+  for (const a of actions) {
+    if (a.status !== 'pending' || !isSessionAction(a)) continue;
+    try {
+      await runSessionAction(a, true);
+      applied++;
+    } catch {
+      // e.g. the exercise was already changed or the workout finished: leave it as a manual button.
+    }
+  }
+  if (applied) await saveActions(messageId, actions);
+  return applied;
+}
+
+/** Undo an applied change to today's workout. */
+export async function undoAction(messageId: number, index: number): Promise<CoachAction> {
+  const actions = await loadActions(messageId);
+  const a = actions[index];
+  if (!a || !isSessionAction(a) || a.status !== 'applied' || !('undo' in a) || !a.undo) throw new Error('Nothing to undo');
+  const u = a.undo;
+  if (u.kind === 'swap') {
+    // Look up the program slot before the swap-back replaces this row.
+    const slot = a.type === 'swap' && a.permanent ? await getProgramSlotFor(u.workoutExerciseId) : null;
+    await swapExercise(u.workoutExerciseId, u.exerciseId, 'today');
+    if (slot) await setSlotExercise(slot, u.exerciseId);
+    if (a.type === 'swap') a.permanent = false;
+  } else if (u.kind === 'load') {
+    await restoreTargets(u.weights);
+  } else {
+    await removeWorkoutExercise(u.workoutExerciseId);
+  }
+  a.status = 'undone';
+  delete a.undo;
+  await saveActions(messageId, actions);
+  return a;
+}
+
+async function getProgramSlotFor(wexId: number): Promise<string | null> {
+  const row = must(await db().from('workout_exercises').select('slot_id').eq('id', wexId).maybeSingle()) as { slot_id: string | null } | null;
+  return row?.slot_id ?? null;
+}
+
+/** For a swap the coach suggested keeping: also use it in future sessions. */
+export async function makeSwapPermanent(messageId: number, index: number): Promise<CoachAction> {
+  const actions = await loadActions(messageId);
+  const a = actions[index];
+  if (!a || a.type !== 'swap' || a.status !== 'applied' || a.undo?.kind !== 'swap') throw new Error('Nothing to keep');
+  const slot = await getProgramSlotFor(a.undo.workoutExerciseId);
+  if (!slot) throw new Error('This exercise isn\'t part of your program');
+  await setSlotExercise(slot, a.exerciseId);
+  a.permanent = true;
+  await saveActions(messageId, actions);
+  return a;
+}
+
+export async function applyAction(messageId: number, index: number, dismiss: boolean): Promise<CoachAction> {
+  const actions = await loadActions(messageId);
   const a = actions[index];
   if (!a) throw new Error('Action not found');
   if (a.type === 'health') {
@@ -59,15 +155,16 @@ export async function applyAction(messageId: number, index: number, dismiss: boo
     if (!dismiss || a.status !== 'applied') throw new Error('Already saved');
     must(await db().from('health_notes').delete().eq('id', a.noteId));
     a.status = 'dismissed';
-    must(await db().from('coach_messages').update({ actions }).eq('id', messageId));
+    await saveActions(messageId, actions);
     return a;
   }
   if (a.status !== 'pending') throw new Error(`Already ${a.status}`);
-  if (!dismiss) {
+  if (dismiss) {
+    a.status = 'dismissed';
+  } else if (isSessionAction(a)) {
+    await runSessionAction(a, false);
+  } else {
     switch (a.type) {
-      case 'swap': await swapExercise(a.workoutExerciseId, a.exerciseId, a.scope); break;
-      case 'load': await adjustLoad(a.workoutExerciseId, a.percent); break;
-      case 'add': await addExerciseToWorkout(a.workoutId, a.exerciseId, { sets: a.sets, reps: a.reps, restSeconds: a.restSeconds, note: a.note }); break;
       case 'program': await setSlotExercise(a.slotId, a.exerciseId); break;
       case 'limitations': {
         const p = await getProfile();
@@ -79,9 +176,9 @@ export async function applyAction(messageId: number, index: number, dismiss: boo
         break;
       }
     }
+    a.status = 'applied';
   }
-  a.status = dismiss ? 'dismissed' : 'applied';
-  must(await db().from('coach_messages').update({ actions }).eq('id', messageId));
+  await saveActions(messageId, actions);
   return a;
 }
 

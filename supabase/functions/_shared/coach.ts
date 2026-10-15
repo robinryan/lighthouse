@@ -60,14 +60,15 @@ Scope: you only help with training — exercises and technique, programming, mob
 
 Your job:
 - Answer training questions using evidence-based practice. Answer from your own knowledge by default; use web search only when the user asks you to research something, or a question genuinely needs specific or recent evidence you aren't sure of (e.g. a particular injury or study). One or two searches is plenty. Prefer reputable sources (peer-reviewed research, physiotherapy/sports-medicine organizations, established coaches). Do not invent citations.
-- When something hurts: ask at most one clarifying question only if truly needed; otherwise suggest pain-free alternatives from the catalog, load reductions, and relevant mobility or rehab work. Use the propose_* tools so the user can apply your suggestions with one tap. Prefer keeping the movement pattern and training effect while removing the painful position (e.g. neutral grip, reduced range, machine or dumbbell versions).
+- When something hurts: ask at most one clarifying question only if truly needed; otherwise suggest pain-free alternatives from the catalog, load reductions, and relevant mobility or rehab work. Use the propose_* tools so your suggestions take effect (see below). Prefer keeping the movement pattern and training effect while removing the painful position (e.g. neutral grip, reduced range, machine or dumbbell versions).
 - Safety: you are not a medical professional. If the user describes sharp or sudden pain, a pop, swelling, numbness or tingling, pain that persists at rest or at night, or chest pain/dizziness, tell them to stop the exercise and see a doctor or physiotherapist. Never encourage training through sharp pain. Mild, familiar discomfort that stays at or below about 3/10 and settles within 24 hours is generally acceptable to train around.
 - Only recommend exercises by catalog id via the tools; you may mention others in text but tools must use catalog ids.
+- Changes to today's workout (propose_swap, propose_load_change, propose_add_exercise) are applied to the current session immediately, and the user can undo them. Changes to future sessions (propose_program_change, propose_limitations, and propose_swap with scope "program") wait for the user to approve.
 - Use propose_program_change only when a change should stick across future sessions (e.g. a recurring problem). Use propose_swap with scope "today" for one-off issues.
 - Use propose_limitations when the user reveals an ongoing joint issue so future programs avoid aggravating it.
 - Health profile: whenever the user tells you something lasting about their body or preferences (a sore or injured joint, an exercise that hurts, one that feels great, one they dislike, relevant history like surgery or a desk job), call record_health_note right away — it saves immediately and the user can undo it. Don't record trivia or repeat what's already in the profile. Respect the profile in every recommendation: never suggest exercises listed under "Avoid", and favour ones that are easy on sensitive joints.
 - When the user skipped an exercise or sets (shown in context with the reason), take that reason into account.
-- Weights are in the user's units. Never claim you changed anything — you propose; the user applies.
+- Weights are in the user's units. Describe today's changes as done ("I've swapped…"); describe future-session changes as suggestions for the user to approve.
 
 Exercise catalog — only exercises the user has equipment for (id|name|muscles|joints it stresses):
 ${catalogFor(equipment)}`;
@@ -262,11 +263,21 @@ export async function buildContext(db: Db, workout: LoadedWorkout | null, today:
 // ---------------------------------------------------------------------------
 // Actions (proposals)
 
-type ActionStatus = 'pending' | 'applied' | 'dismissed';
+type ActionStatus = 'pending' | 'applied' | 'dismissed' | 'undone';
+
+/** Changes to today's workout are applied automatically; this is what's needed to undo them. */
+export type ActionUndo =
+  | { kind: 'swap'; workoutExerciseId: number; exerciseId: string }
+  | { kind: 'load'; weights: Array<{ setId: number; weight: number | null }> }
+  | { kind: 'add'; workoutExerciseId: number };
+
+/** Actions that change only the workout in progress, so the app applies them straight away. */
+export const SESSION_ACTIONS = ['swap', 'load', 'add'] as const;
 export type CoachAction =
-  | { type: 'swap'; workoutExerciseId: number; exerciseId: string; scope: 'today' | 'program'; reason: string; label: string; status: ActionStatus }
-  | { type: 'load'; workoutExerciseId: number; percent: number; reason: string; label: string; status: ActionStatus }
-  | { type: 'add'; workoutId: number; exerciseId: string; sets: number; reps: number; restSeconds: number; note: string; label: string; status: ActionStatus }
+  | { type: 'swap'; workoutExerciseId: number; exerciseId: string; scope: 'today' | 'program'; reason: string; label: string; status: ActionStatus;
+      undo?: ActionUndo; /** scope "program": the user also made it permanent */ permanent?: boolean }
+  | { type: 'load'; workoutExerciseId: number; percent: number; reason: string; label: string; status: ActionStatus; undo?: ActionUndo }
+  | { type: 'add'; workoutId: number; exerciseId: string; sets: number; reps: number; restSeconds: number; note: string; label: string; status: ActionStatus; undo?: ActionUndo }
   | { type: 'program'; slotId: string; exerciseId: string; reason: string; label: string; status: ActionStatus }
   | { type: 'limitations'; add: Joint[]; remove: Joint[]; note: string; label: string; status: ActionStatus }
   /** Already saved when created; "dismissing" it undoes the save. */
@@ -528,7 +539,9 @@ export async function runCoach(opts: {
         actions.push(action);
         results.push({ type: 'tool_result', tool_use_id: block.id, content: action.type === 'health'
           ? 'Saved to the health profile (the user can undo).'
-          : `Shown to the user as a button: "${action.label}". Not applied yet.` });
+          : (SESSION_ACTIONS as readonly string[]).includes(action.type)
+            ? `Applied to today's workout: "${action.label}". The user can undo it.`
+            : `Shown to the user as a button: "${action.label}". Not applied until they approve.` });
       } catch (err) {
         results.push({ type: 'tool_result', tool_use_id: block.id, is_error: true, content: (err as Error).message });
       }

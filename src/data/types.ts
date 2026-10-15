@@ -67,7 +67,11 @@ export interface ProgramDTO { nextDay: number; fiveRMs: Record<string, number | 
 
 export interface WorkoutListItem { id: number; date: string; title: string; setsDone: number; volume: number; prs: number; durationMin: number | null; exercises: string[] }
 
-export interface CoachAction { type: string; label: string; reason?: string; note?: string; status: 'pending' | 'applied' | 'dismissed' }
+export interface CoachAction {
+  type: string; label: string; reason?: string; note?: string; status: 'pending' | 'applied' | 'dismissed' | 'undone';
+  /** Set on applied changes to today's workout. */ undo?: unknown;
+  /** Swaps: the coach suggested keeping it for future sessions; permanent = the user agreed. */ scope?: 'today' | 'program'; permanent?: boolean;
+}
 export interface CoachMessage {
   id: number; role: 'user' | 'assistant'; content: string; createdAt: string; actions: CoachAction[]; sources: Array<{ url: string; title: string }>;
   costUsd: number | null; effort: 'low' | 'medium' | null; webSearches: number;

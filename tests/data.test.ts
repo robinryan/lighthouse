@@ -481,3 +481,65 @@ test('coach abuse guards: locked-down messages, limits, topic screen', { skip: !
   // 0 turns a limit off.
   await ask('one more', { hourly: 0, daily: 0, totalBudgetUsd: 0 });
 });
+
+test('coach changes to today\'s workout apply automatically and can be undone', { skip: !ADMIN_URL && 'TEST_DATABASE_URL not set' }, async () => {
+  const { applySessionActions, undoAction, makeSwapPermanent } = await import('../src/data/coach.ts');
+  const G = { id: '77777777-7777-4777-8777-777777777777', email: 'g@example.com' };
+  await pool.query(`INSERT INTO auth.users (id, email, raw_user_meta_data) VALUES ($1, $2, '{"name":"G"}')`, [G.id, G.email]);
+  const asG = fakeSupabase(pool, G);
+  setDb(asG);
+  await T.completeOnboarding(profile({ name: 'G' }), { squat: 100, bench: 70, deadlift: 120, ohp: 45 });
+  const id = await T.startWorkout({ date: '2026-10-15' });
+  const w = await T.getWorkout(id);
+  const squat = w.exercises.find((e) => e.exerciseId === 'squat')!;
+  const bench = w.exercises.find((e) => e.exerciseId === 'bench')!;
+  const benchSlot = (await T.getProgram())!.program.days[0].slots.find((s) => s.exerciseId === 'bench')!;
+  const squatTargets = squat.sets.filter((s) => s.kind === 'working').map((s) => s.targetWeight);
+
+  const script = [
+    { stop_reason: 'tool_use', content: [
+      { type: 'text', text: 'I\'ve made today easier on your elbow.' },
+      { type: 'tool_use', id: 'a', name: 'propose_swap', input: { workout_exercise_id: bench.id, new_exercise_id: 'neutral_db_press', scope: 'program', reason: 'Neutral grip.' } },
+      { type: 'tool_use', id: 'b', name: 'propose_load_change', input: { workout_exercise_id: squat.id, percent_change: -20, reason: 'Lighter today.' } },
+      { type: 'tool_use', id: 'c', name: 'propose_add_exercise', input: { exercise_id: 'wrist_extensor_stretch', sets: 2, reps: 30, rest_seconds: 15, note: 'Gentle.' } },
+      { type: 'tool_use', id: 'd', name: 'propose_limitations', input: { add: ['elbow'], remove: [], note: 'Elbow' } },
+    ] },
+    { stop_reason: 'end_turn', content: [] },
+  ];
+  const requests: any[] = [];
+  const anthropic = { messages: { create: ON_TOPIC }, beta: { messages: { stream: (req: any) => { requests.push(structuredClone(req)); const m = script.shift(); return { finalMessage: async () => m }; } } } };
+  const reply = await runCoach({ db: asG, admin: asAdmin, userId: G.id, anthropic, workoutId: id, text: 'Elbow is sore', today: '2026-10-15' });
+  // The coach is told which changes already took effect.
+  const results = requests[1].messages.at(-1).content;
+  assert.match(results.find((r: any) => r.tool_use_id === 'a').content, /Applied to today's workout/);
+  assert.match(results.find((r: any) => r.tool_use_id === 'd').content, /Not applied until they approve/);
+  assert.match(requests[0].system[0].text, /applied to the current session immediately/);
+
+  // The app applies the session changes; the future-session change waits.
+  assert.equal(await applySessionActions(reply.id), 3);
+  let after = await T.getWorkout(id);
+  const press = after.exercises.find((e) => e.exerciseId === 'neutral_db_press')!;
+  assert.ok(press && !after.exercises.some((e) => e.exerciseId === 'bench'), 'swapped today');
+  assert.equal((await T.getProgram())!.program.days[0].slots.find((s) => s.id === benchSlot.id)!.exerciseId, 'bench', 'program untouched until kept');
+  const newSquat = after.exercises.find((e) => e.exerciseId === 'squat')!.sets.filter((s) => s.kind === 'working').map((s) => s.targetWeight);
+  assert.ok(newSquat.every((wt, i) => wt! < squatTargets[i]!), 'squat lighter');
+  assert.ok(after.exercises.some((e) => e.exerciseId === 'wrist_extensor_stretch'), 'stretch added');
+  let msg = (await listMessages(id)).at(-1)!;
+  assert.deepEqual(msg.actions.map((a) => a.status), ['applied', 'applied', 'applied', 'pending']);
+  assert.equal(await applySessionActions(reply.id), 0, 'nothing applied twice');
+
+  // Keep the swap for future sessions, then undo everything.
+  await makeSwapPermanent(reply.id, 0);
+  assert.equal((await T.getProgram())!.program.days[0].slots.find((s) => s.id === benchSlot.id)!.exerciseId, 'neutral_db_press');
+  await undoAction(reply.id, 0);
+  await undoAction(reply.id, 1);
+  await undoAction(reply.id, 2);
+  after = await T.getWorkout(id);
+  assert.ok(after.exercises.some((e) => e.exerciseId === 'bench') && !after.exercises.some((e) => e.exerciseId === 'neutral_db_press'));
+  assert.equal((await T.getProgram())!.program.days[0].slots.find((s) => s.id === benchSlot.id)!.exerciseId, 'bench', 'program restored');
+  assert.deepEqual(after.exercises.find((e) => e.exerciseId === 'squat')!.sets.filter((s) => s.kind === 'working').map((s) => s.targetWeight), squatTargets);
+  assert.ok(!after.exercises.some((e) => e.exerciseId === 'wrist_extensor_stretch'));
+  msg = (await listMessages(id)).at(-1)!;
+  assert.deepEqual(msg.actions.map((a) => a.status), ['undone', 'undone', 'undone', 'pending']);
+  await assert.rejects(undoAction(reply.id, 0), /Nothing to undo/);
+});

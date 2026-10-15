@@ -421,14 +421,16 @@ export async function removeWorkoutExercise(wexId: number) {
   must(await db().from('workout_exercises').delete().eq('id', wexId));
 }
 
+/** Replaces an exercise in an in-progress workout. Returns the new row's id and the exercise it replaced. */
 export async function swapExercise(wexId: number, newExerciseId: string, scope: 'today' | 'program') {
   if (!EXERCISE_MAP.has(newExerciseId)) throw new Error('Unknown exercise');
   const we = await loadWex(wexId);
   if (we.status !== 'in_progress') throw new Error('Workout is not in progress');
   const ctx = await loadCtx();
-  await insertExercise(ctx, we.workout_id, newExerciseId, we.tier, we.position, we.slot_id, we.date, we.exercise_id);
+  const id = await insertExercise(ctx, we.workout_id, newExerciseId, we.tier, we.position, we.slot_id, we.date, we.exercise_id);
   must(await db().from('workout_exercises').delete().eq('id', wexId));
   if (scope === 'program' && we.slot_id) await setSlotExercise(we.slot_id, newExerciseId);
+  return { id, replaced: we.exercise_id, slotId: we.slot_id };
 }
 
 export async function addExerciseToWorkout(workoutId: number, exerciseId: string, opts: {
@@ -458,15 +460,24 @@ export async function addExerciseToWorkout(workoutId: number, exerciseId: string
   return id;
 }
 
+/** Changes the target weight of the remaining sets. Returns the previous targets so it can be undone. */
 export async function adjustLoad(wexId: number, percent: number) {
   const we = await loadWex(wexId);
   const ex = getExercise(we.exercise_id);
   const { units } = await getProfile();
   const sets = must(await db().from('sets').select('*').eq('workout_exercise_id', wexId).eq('done', false)) as SetRow[];
+  const previous: Array<{ setId: number; weight: number | null }> = [];
   for (const s of sets) {
     if (!s.target_weight) continue;
+    previous.push({ setId: s.id, weight: s.target_weight });
     must(await db().from('sets').update({ target_weight: roundWeight(s.target_weight * (1 + percent / 100), ex, units) }).eq('id', s.id));
   }
+  return previous;
+}
+
+/** Puts back target weights saved by adjustLoad, for sets that haven't been done yet. */
+export async function restoreTargets(weights: Array<{ setId: number; weight: number | null }>) {
+  for (const w of weights) must(await db().from('sets').update({ target_weight: w.weight }).eq('id', w.setId).eq('done', false));
 }
 
 export async function finishWorkout(workoutId: number): Promise<FinishSummary> {

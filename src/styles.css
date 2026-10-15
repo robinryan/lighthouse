@@ -313,3 +313,11 @@ input, select, textarea { font-size: 16px; } /* < 16px makes iOS zoom in on focu
 
 .install-card { display: flex; align-items: center; gap: 10px; }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; animation: none !important; } }
+
+/* Coach: big message box on top, newest exchange first underneath. */
+.coach-chat { flex: 1; min-height: 0; }
+.coach-composer { display: flex; flex-direction: column; gap: 8px; }
+.coach-composer textarea { min-height: 120px; max-height: 40dvh; resize: vertical; font-size: 16px; line-height: 1.4; }
+.coach-history { flex: 1; min-height: 0; overflow-y: auto; gap: 14px; }
+.exchange { display: flex; flex-direction: column; gap: 8px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
+.exchange:last-child { border-bottom: 0; }

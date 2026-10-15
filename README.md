@@ -88,7 +88,9 @@ If you ever want direct control over the database (SQL editor, backups, monitori
 
 **AI coach (Claude)**
 - Lives in every workout and has its own tab. It sees your profile, program, today's workout and recent sessions, and can search the web, citing its sources.
-- Proposes changes as one-tap **Apply** buttons: swap an exercise, lighten the remaining sets, add stretches or rehab drills, change a program slot, or record a joint to protect. Nothing changes until you tap Apply.
+- Changes to the workout you're doing (swapping an exercise, lightening the remaining sets, adding stretches or rehab drills) are applied straight away, each with an **Undo**. If the coach thinks a swap should stick, you can also tap **Keep for future sessions**.
+- Changes to future sessions (a program slot, a joint to protect) wait for you to tap **Apply**.
+- The message box sits at the top of the chat; the newest question and answer appear right under it.
 - It isn't medical advice. It tells you to stop and see a professional for sharp pain, swelling or numbness.
 - Runs Claude Opus 5.5, with server-side refusal fallbacks enabled.
 
