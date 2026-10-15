@@ -47,12 +47,13 @@
 }
 
 * { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); }
+html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); overscroll-behavior-x: none; }
 body {
   font: 16px/1.45 -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', system-ui, 'Segoe UI', Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
   -webkit-tap-highlight-color: transparent;
   overscroll-behavior-y: none;
+  overscroll-behavior-x: none; /* no swipe-to-go-back mid set swipe */
 }
 a { color: var(--accent-text); text-decoration: none; }
 h1, h2, h3 { margin: 0 0 8px; line-height: 1.2; letter-spacing: -0.01em; }
@@ -332,3 +333,16 @@ input, select, textarea { font-size: 16px; } /* < 16px makes iOS zoom in on focu
 .timer-inner .btn.sm { padding: 0 10px; }
 .timer-inner { gap: 6px; }
 .timer-inner .timer-time { min-width: 70px; }
+
+/* Swipe a pending set left or right to delete it. Cells slide; a red panel fills the gap. */
+.ex-card { overflow: hidden; }
+/* touch-action is ignored on table rows, so it goes on the cells. */
+.set-table tr.swipeable td, .set-table tr.swipeable input, .set-table tr.swipeable button { touch-action: pan-y; }
+.set-table tr.swipeable td { position: relative; transform: translateX(var(--dx, 0px)); transition: transform 0.18s ease; }
+.set-table tr.swipeable.dragging td { transition: none; }
+.swipe-reveal {
+  position: absolute; top: 0; bottom: 0; width: 100vw; display: flex; align-items: center; padding: 0 18px;
+  background: var(--bad); color: #fff; font-weight: 700; font-size: 15px; pointer-events: none;
+}
+.swipe-reveal.from-right { left: 100%; justify-content: flex-start; }
+.swipe-reveal.from-left { right: 100%; justify-content: flex-end; }
