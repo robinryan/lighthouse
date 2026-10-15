@@ -33,7 +33,7 @@ If you ever want direct control over the database (SQL editor, backups, monitori
 - New users pick a goal and experience, or describe themselves in their own words: current health, goals, injuries or past setbacks, schedule.
 - The coach reads that description and fills in the remaining setup steps, which the user can correct. It also saves joints to protect, exercises to avoid and other notes to the health profile, so the first program already works around them.
 - After building the program, a **Your plan** screen explains in plain language why it fits that person, including any exercises swapped for their injuries. The coach writes it when there's a description; otherwise a built-in explanation is used. It's kept on the Program page ("Why this plan fits you") and as the first conversation in the Coach tab.
-- Reading the description and writing the explanation cost about $0.02–0.05 per new user on Opus, counted toward the same budgets and limits as the coach.
+- Reading the description and writing the explanation cost roughly $0.05–0.06 per new user on Opus (an estimate, not measured), counted toward the same budgets and limits as the coach.
 
 **Programming**
 - A 4-session rotation based on GZCLP. Every day has **two main lifts**: a heavy T1 lift (e.g. 5×3, last set as many reps as possible) and a volume T2 lift (e.g. 3×10). Accessories (T3) follow.
