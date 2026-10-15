@@ -246,12 +246,21 @@ function ExerciseCard({ ex, units, readOnly, active, isLast, nextName, onLocalCh
     }
   }
 
-  async function edit(s: SetDTO, field: 'actualReps' | 'actualWeight' | 'rpe', raw: string) {
+  async function edit(s: SetDTO, field: 'actualReps' | 'actualWeight' | 'rpe', raw: string, propagate = true) {
     const v = parseField(raw);
     if (v === undefined) return;
     if (s[field] === v) return;
-    setLocal(s.id, { [field]: v });
-    await patchSet(s.id, { [field]: field === 'actualReps' && v != null ? Math.round(v) : v });
+    const value = field === 'actualReps' && v != null ? Math.round(v) : v;
+    // Later sets meant to match this one (same kind and target, not yet done) take the same
+    // weight/reps — unless you've already entered something different for them. AMRAP sets keep open reps.
+    const followers = !propagate || field === 'rpe' || (field === 'actualReps' && s.amrap) ? [] : ex.sets
+      .slice(ex.sets.findIndex((x) => x.id === s.id) + 1)
+      .filter((x) => x.kind === s.kind && !x.done && !x.skipped
+        && x.targetWeight === s.targetWeight && x.targetReps === s.targetReps
+        && !(field === 'actualReps' && x.amrap)
+        && (x[field] == null || x[field] === s[field]));
+    for (const x of [s, ...followers]) setLocal(x.id, { [field]: value });
+    await Promise.all([s, ...followers].map((x) => patchSet(x.id, { [field]: value })));
   }
 
   async function addSet(kind: 'working' | 'warmup') {
@@ -541,7 +550,7 @@ function SetRow({ s, n, ex, prev, readOnly, showWeight, current, units, onToggle
   s: SetDTO; n: number; ex: WorkoutExercise; prev: { reps: number | null; weight: number | null } | null; readOnly: boolean; showWeight: boolean;
   current: boolean; units: Units;
   onToggle: (s: SetDTO, typed: { reps: number | null; weight: number | null }) => Promise<void>;
-  onEdit: (s: SetDTO, field: 'actualReps' | 'actualWeight', raw: string) => Promise<void>;
+  onEdit: (s: SetDTO, field: 'actualReps' | 'actualWeight', raw: string, propagate?: boolean) => Promise<void>;
   onMenu: (s: SetDTO) => void;
 }) {
   const [w, setW] = useState(s.actualWeight != null ? String(s.actualWeight) : '');
@@ -589,8 +598,9 @@ function SetRow({ s, n, ex, prev, readOnly, showWeight, current, units, onToggle
         <button className="prev" disabled={readOnly || !prev}
           onClick={() => {
             if (!prev) return;
-            if (prev.weight != null) { setW(String(prev.weight)); void onEdit(s, 'actualWeight', String(prev.weight)); }
-            if (prev.reps != null) { setR(String(prev.reps)); void onEdit(s, 'actualReps', String(prev.reps)); }
+            // "Previous" fills just this set: each set has its own previous values.
+            if (prev.weight != null) { setW(String(prev.weight)); void onEdit(s, 'actualWeight', String(prev.weight), false); }
+            if (prev.reps != null) { setR(String(prev.reps)); void onEdit(s, 'actualReps', String(prev.reps), false); }
           }}>
           {prev ? (ex.loadType === 'time' ? `${prev.reps}s` : `${fmtNum(prev.weight ?? 0)}${unit}×${prev.reps}`) : '—'}
         </button>
