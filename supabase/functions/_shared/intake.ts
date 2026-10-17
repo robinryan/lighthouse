@@ -5,7 +5,7 @@
 import { EXERCISES, EXERCISE_MAP, JOINTS, type Equipment, type Joint } from './exercises.ts';
 import { type UsageTotals, addUsage, costUsd, emptyUsage } from './pricing.ts';
 import { type Db, loadProfile, loadProgram, must } from './queries.ts';
-import { type CoachLimits, type CoachUsage, DEFAULT_LIMITS, DEFAULT_MODEL, type MessageRow, checkLimits, limitStats, requestOptionsFor } from './coach.ts';
+import { type CoachLimits, type CoachUsage, DEFAULT_LIMITS, MODELS, type MessageRow, type Tier, checkLimits, limitStats, requestOptionsFor } from './coach.ts';
 import { describeProgram, healthSwaps } from './plan.ts';
 
 export const MAX_INTAKE_CHARS = 2000;
@@ -116,7 +116,11 @@ interface IntakeOpts {
   // deno-lint-ignore no-explicit-any
   anthropic: any;
   model?: string; text: string; limits?: Partial<CoachLimits>;
+  /** Free users get Sonnet (still careful with injuries, half the price); paid users and admins get Opus. */
+  tier?: Tier;
 }
+
+const intakeModel = (o: IntakeOpts) => o.model || (o.tier === 'free' ? MODELS.sonnet : MODELS.opus);
 
 function usageRecord(model: string, usage: UsageTotals, cost: number, budget: number, spent: number, kind: string): CoachUsage & { kind: string } {
   return { ...usage, model, effort: 'low', costUsd: cost, budgetUsd: budget, monthSpentUsd: Math.round((spent + cost) * 10_000) / 10_000, kind };
@@ -127,7 +131,7 @@ export async function runIntakeExtract(opts: IntakeOpts): Promise<IntakeResult> 
   const { admin, userId, anthropic } = opts;
   const text = opts.text.trim().slice(0, MAX_INTAKE_CHARS);
   if (!text) throw new Error('Tell me a little about yourself first');
-  const model = opts.model || DEFAULT_MODEL;
+  const model = intakeModel(opts);
   const limits = { ...DEFAULT_LIMITS, ...opts.limits };
   const stats = await limitStats(admin, userId);
   checkLimits(stats, limits);
@@ -172,7 +176,7 @@ Don't promise outcomes or diagnose. If they mention a serious or unclear medical
 export async function runIntakeExplain(opts: IntakeOpts): Promise<MessageRow> {
   const { db, admin, userId, anthropic } = opts;
   const text = opts.text.trim().slice(0, MAX_INTAKE_CHARS);
-  const model = opts.model || DEFAULT_MODEL;
+  const model = intakeModel(opts);
   const limits = { ...DEFAULT_LIMITS, ...opts.limits };
   const stats = await limitStats(admin, userId);
   checkLimits(stats, limits);

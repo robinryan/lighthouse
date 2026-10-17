@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router';
-import { coachUsageThisMonth, db, exportCsv, localDate, regenerateProgram, saveProfile, type Profile } from '../api';
-import { useAsync, useSession } from '../hooks';
+import { db, exportCsv, localDate, regenerateProgram, saveProfile, type Profile } from '../api';
+import { usePlan, useSession } from '../hooks';
 import { ProfileFields } from './Setup';
 
 function Toggle({ k, label }: { k: string; label: string }) {
@@ -18,13 +18,20 @@ function Toggle({ k, label }: { k: string; label: string }) {
   );
 }
 
+const PLAN_NAMES = { free: 'FREE', paid: 'PAID', admin: 'ADMIN' } as const;
+const PLAN_DETAILS = {
+  free: 'Coach answers use fast, low-cost models; questions about pain or injury get a stronger model. Research with studies is part of the paid plan.',
+  paid: 'Everyday questions get a fast model, questions about your own training a stronger one, and pain, injury and research questions the most capable one.',
+  admin: 'Same coach as the paid plan, with no limits.',
+} as const;
+
 export function SettingsPage() {
   const { user, profile, refreshProfile, logout } = useSession();
   const [draft, setDraft] = useState<Omit<Profile, 'onboarded'>>(profile);
   const [saved, setSaved] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pw, setPw] = useState('');
-  const usage = useAsync(() => coachUsageThisMonth(), []);
+  const plan = usePlan(true);
   const [notif, setNotif] = useState(typeof Notification !== 'undefined' ? Notification.permission : 'denied');
 
   async function save(rebuild: boolean) {
@@ -43,6 +50,32 @@ export function SettingsPage() {
   return (
     <div className="stack">
       <div className="page-header" style={{ marginBottom: 0 }}><h1>Settings</h1></div>
+
+      <div className="card stack">
+        <div className="spread">
+          <h2 style={{ margin: 0 }}>Your plan</h2>
+          {plan && <span className={`badge ${plan.tier === 'free' ? '' : 'T1'}`}>{PLAN_NAMES[plan.tier]}</span>}
+        </div>
+        {plan ? (
+          <>
+            <p className="small" style={{ margin: 0 }}>{PLAN_DETAILS[plan.tier]}</p>
+            {plan.usedPct != null && (
+              <>
+                <div className="small muted">Coach allowance this month: {plan.usedPct}% used{plan.dailyLimit ? ` · ${plan.messagesToday} of ${plan.dailyLimit} messages today` : ''}</div>
+                <div className="bar-track"><div className="bar-fill" style={{ width: `${plan.usedPct}%` }} /></div>
+              </>
+            )}
+            {plan.tier === 'admin' && (
+              <>
+                <div className="small muted">Your coach spending this month: ${(plan.spentUsd ?? 0).toFixed(2)} (no limit)</div>
+                <Link className="btn block" to="/admin">Open admin: users, usage and spending</Link>
+              </>
+            )}
+          </>
+        ) : <p className="small muted">{plan === null ? 'Plan details will show here once the coach function is up to date.' : 'Loading…'}</p>}
+        <p className="tiny muted" style={{ margin: 0 }}>Only the AI coach has running costs; the program, logging and progress tracking are free.</p>
+      </div>
+
 
       <div className="card stack">
         <h2>Training profile</h2>
@@ -83,25 +116,6 @@ export function SettingsPage() {
           </button>
         )}
         <p className="tiny muted" style={{ marginTop: 6 }}>Tip: install the app to your home screen (Share → Add to Home Screen) for full-screen use and notifications.</p>
-      </div>
-
-      <div className="card">
-        <h2>AI coach usage</h2>
-        {usage.data ? (
-          <>
-            <p className="small" style={{ margin: '4px 0' }}>
-              This month: <b>${usage.data.spentUsd.toFixed(2)}</b>
-              {usage.data.budgetUsd ? <> of ${usage.data.budgetUsd.toFixed(2)} budget</> : null} · {usage.data.messages} replies
-              {usage.data.messages ? ` · avg $${usage.data.avgUsd.toFixed(3)}` : ''}{usage.data.webSearches ? ` · ${usage.data.webSearches} web search${usage.data.webSearches === 1 ? '' : 'es'}` : ''}
-            </p>
-            {usage.data.budgetUsd ? (
-              <div className="bar-track" style={{ margin: '6px 0' }}>
-                <div className="bar-fill" style={{ width: `${Math.min(100, (usage.data.spentUsd / usage.data.budgetUsd) * 100)}%` }} />
-              </div>
-            ) : null}
-            <p className="tiny muted" style={{ margin: 0 }}>Estimated from token counts at list prices. Only the coach chat uses AI; everything else in the app is free to run.</p>
-          </>
-        ) : <p className="small muted">{usage.error ?? 'Loading…'}</p>}
       </div>
 
       <div className="card stack">

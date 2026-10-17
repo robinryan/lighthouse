@@ -19,9 +19,11 @@ export interface UsageTotals {
   cacheReadTokens: number;
   webSearches: number;
   requests: number;
+  /** Of cacheWriteTokens, how many went to the 1-hour cache (billed at 2× input instead of 1.25×). */
+  cacheWrite1hTokens?: number;
 }
 
-export const emptyUsage = (): UsageTotals => ({ inputTokens: 0, outputTokens: 0, cacheWriteTokens: 0, cacheReadTokens: 0, webSearches: 0, requests: 0 });
+export const emptyUsage = (): UsageTotals => ({ inputTokens: 0, outputTokens: 0, cacheWriteTokens: 0, cacheReadTokens: 0, webSearches: 0, requests: 0, cacheWrite1hTokens: 0 });
 
 // deno-lint-ignore no-explicit-any
 export function addUsage(t: UsageTotals, u: any) {
@@ -30,6 +32,7 @@ export function addUsage(t: UsageTotals, u: any) {
   t.outputTokens += u.output_tokens ?? 0;
   t.cacheWriteTokens += u.cache_creation_input_tokens ?? 0;
   t.cacheReadTokens += u.cache_read_input_tokens ?? 0;
+  t.cacheWrite1hTokens = (t.cacheWrite1hTokens ?? 0) + (u.cache_creation?.ephemeral_1h_input_tokens ?? 0);
   t.webSearches += u.server_tool_use?.web_search_requests ?? 0;
   t.requests += 1;
 }
@@ -37,6 +40,8 @@ export function addUsage(t: UsageTotals, u: any) {
 /** Unknown models are priced as Opus so estimates err on the high side. */
 export function costUsd(model: string, t: UsageTotals): number {
   const p = PRICES[model] ?? PRICES['claude-opus-5-5'];
-  const tokens = (t.inputTokens * p.input + t.outputTokens * p.output + t.cacheWriteTokens * p.cacheWrite + t.cacheReadTokens * p.cacheRead) / 1_000_000;
+  const w1h = Math.min(t.cacheWrite1hTokens ?? 0, t.cacheWriteTokens);
+  const tokens = (t.inputTokens * p.input + t.outputTokens * p.output + (t.cacheWriteTokens - w1h) * p.cacheWrite
+    + w1h * p.input * 2 + t.cacheReadTokens * p.cacheRead) / 1_000_000;
   return Math.round((tokens + t.webSearches * WEB_SEARCH_PER_SEARCH) * 10_000) / 10_000;
 }

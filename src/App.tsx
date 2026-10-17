@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router';
 import { db, flushOutbox, getProfile, isConfigured, NetworkError, type Profile, type User, takeAuthLinkError } from './api';
-import { SessionContext, useOnline } from './hooks';
+import { SessionContext, useOnline, refreshPlan } from './hooks';
 import { RestTimerBar, RestTimerProvider, useRestTimer } from './components/RestTimer';
 import { LoginPage, NewPasswordPage } from './pages/Login';
 import { SetupPage } from './pages/Setup';
@@ -18,6 +18,7 @@ const ProgramPage = lazy(() => import('./pages/Program').then((m) => ({ default:
 const CoachPage = lazy(() => import('./pages/Coach').then((m) => ({ default: m.CoachPage })));
 const SettingsPage = lazy(() => import('./pages/Settings').then((m) => ({ default: m.SettingsPage })));
 const HealthPage = lazy(() => import('./pages/Health').then((m) => ({ default: m.HealthPage })));
+const AdminPage = lazy(() => import('./pages/Admin').then((m) => ({ default: m.AdminPage })));
 
 const Icon = ({ d }: { d: string }) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d={d} /></svg>
@@ -80,6 +81,7 @@ function SignedInApp() {
   // Opening a password-reset link signs you in; ask for a new password before anything else.
   const [recovering, setRecovering] = useState(OPENED_RECOVERY_LINK);
   const load = useCallback(async (u: User | null) => {
+    refreshPlan(); // a different account may have a different plan
     if (!u) { setUser(null); setProfile(null); return; }
     try {
       setProfile(await getProfile() as Profile);
@@ -141,6 +143,7 @@ function SignedInApp() {
             <Route path="/coach" element={<CoachPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/health" element={<HealthPage />} />
+            <Route path="/admin" element={<AdminPage />} />
             <Route path="/setup" element={<SetupPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

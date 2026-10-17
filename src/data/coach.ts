@@ -1,5 +1,6 @@
 import { SESSION_ACTIONS, isHiddenMessage, type CoachAction, type MessageRow } from '../../supabase/functions/_shared/coach.ts';
 import type { IntakeResult } from '../../supabase/functions/_shared/intake.ts';
+import type { AdminReport, MyPlan } from '../../supabase/functions/_shared/tiers.ts';
 import { must } from '../../supabase/functions/_shared/queries.ts';
 import { db } from './client';
 import {
@@ -11,6 +12,7 @@ function toMessage(r: MessageRow): CoachMessage {
   return {
     id: r.id, role: r.role, content: r.content, createdAt: r.created_at, actions: r.actions ?? [], sources: r.sources ?? [],
     costUsd: r.cost_usd ?? null, effort: r.usage?.effort ?? null, webSearches: r.usage?.webSearches ?? 0,
+    model: r.usage?.model ?? null, route: r.usage?.route ?? null,
   };
 }
 
@@ -53,6 +55,15 @@ async function invokeCoach<T>(body: Record<string, unknown>): Promise<T> {
 export async function askCoach(workoutId: number | null, text: string, research = false): Promise<CoachMessage> {
   return toMessage(await invokeCoach<MessageRow>({ workoutId, text, research }));
 }
+
+/** The signed-in user's class and how much of this month's coach allowance they've used. */
+export const getMyPlan = () => invokeCoach<MyPlan>({ mode: 'me' });
+
+/** Admins: every user, their class, usage and spending. */
+export const getAdminReport = () => invokeCoach<AdminReport>({ mode: 'admin_report' });
+
+/** Admins: move a user between free and paid. */
+export const setUserTier = (userId: string, tier: 'free' | 'paid') => invokeCoach<{ ok: true }>({ mode: 'admin_set_tier', userId, tier });
 
 /** Onboarding: read a new user's description of their health, goals and history. */
 export const readIntake = (text: string) => invokeCoach<IntakeResult>({ mode: 'intake_extract', text });

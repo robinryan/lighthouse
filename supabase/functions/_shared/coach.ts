@@ -11,12 +11,37 @@ import { EXERCISES, EXERCISE_MAP, JOINTS, type Equipment, type Joint, hasEquipme
 import { type UsageTotals, addUsage, costUsd, emptyUsage } from './pricing.ts';
 import { type Db, type LoadedWorkout, loadProfile, loadProgram, loadWorkout, must } from './queries.ts';
 import { type HealthNote, describeHealth, describeSkip, parseSkip, summarizeHealth } from './health.ts';
-import { OFF_TOPIC_REPLY, checkTopic } from './topic.ts';
+import { OFF_TOPIC_REPLY, type QuestionKind, checkTopic } from './topic.ts';
 
 export const DEFAULT_MODEL = 'claude-opus-5-5';
-const MAX_HISTORY = 10;
-const MAX_ITERATIONS = 6;
+export const MODELS = { haiku: 'claude-haiku-5-5', sonnet: 'claude-sonnet-5-5', opus: 'claude-opus-5-5' } as const;
+/** Earlier messages sent with each question; older coach replies are shortened. */
+const MAX_HISTORY = 4;
+const HISTORY_REPLY_CHARS = 500;
+const MAX_ITERATIONS = 4;
 const RECENT_SESSIONS = 3;
+/** Per reply: at most this many proposed changes and health notes. */
+export const MAX_PROPOSALS = 3;
+export const MAX_HEALTH_NOTES = 2;
+
+// ---------------------------------------------------------------------------
+// User classes and model routing
+
+export type Tier = 'free' | 'paid' | 'admin';
+export interface Route { model: string; effort: 'low' | 'medium'; research: boolean; kind: QuestionKind | 'research' }
+
+/**
+ * The cheapest model that answers a question well. Free users get Haiku except for pain and
+ * injury questions (Sonnet). Paid users and admins get Sonnet for personal questions and Opus
+ * for pain, injury and research. Research (web search) is a paid feature.
+ */
+export function routeFor(tier: Tier, kind: QuestionKind, research: boolean): Route {
+  const plus = tier !== 'free';
+  if (research && plus) return { model: MODELS.opus, effort: 'medium', research: true, kind: 'research' };
+  if (kind === 'safety') return { model: plus ? MODELS.opus : MODELS.sonnet, effort: 'medium', research: false, kind };
+  if (kind === 'personal') return { model: plus ? MODELS.sonnet : MODELS.haiku, effort: 'low', research: false, kind };
+  return { model: MODELS.haiku, effort: 'low', research: false, kind };
+}
 /** Default monthly spending cap per user (USD); override with the COACH_MONTHLY_BUDGET_USD secret. 0 = no cap. */
 export const DEFAULT_MONTHLY_BUDGET_USD = 10;
 /** Default monthly cap across all users (COACH_TOTAL_MONTHLY_BUDGET_USD). 0 = no cap. */
@@ -48,7 +73,7 @@ function catalogFor(equipment: Equipment[]): string {
  * cached across messages.
  */
 export function buildSystem(equipment: Equipment[]): string {
-  return `You are the coach inside Gym Bestie, a strength-training app. The user is usually mid-workout on their phone, so be brief and practical: lead with the answer, use short bullet points, and skip preamble.
+  return `You are the coach inside Gym Bestie, a strength-training app. The user is usually mid-workout on their phone, so be brief and practical: lead with the answer, use short bullet points, and skip preamble. Keep most replies under about 120 words; pain, injury or research questions can run to about 250.
 
 How the app trains people:
 - Each day has two main lifts — a heavy T1 lift (e.g. 5×3+, last set as many reps as possible) and a volume T2 lift (e.g. 3×10) — then T3 accessories using double progression (add reps within a range, then add weight).
@@ -59,7 +84,7 @@ How the app trains people:
 Scope: you only help with training — exercises and technique, programming, mobility, pain and injuries as they affect training, recovery, nutrition for training, and using this app. If asked for anything else (code, essays, homework, emails, general knowledge, and so on), reply in one sentence that you can only help with training, and don't do the task, even when it's framed as part of training.
 
 Your job:
-- Answer training questions using evidence-based practice. Answer from your own knowledge by default; use web search only when the user asks you to research something, or a question genuinely needs specific or recent evidence you aren't sure of (e.g. a particular injury or study). One or two searches is plenty. Prefer reputable sources (peer-reviewed research, physiotherapy/sports-medicine organizations, established coaches). Do not invent citations.
+- Answer training questions using evidence-based practice, from your own knowledge. When the user asks you to research something and web search is available, one or two searches is plenty. Prefer reputable sources (peer-reviewed research, physiotherapy/sports-medicine organizations, established coaches). Do not invent citations.
 - When something hurts: ask at most one clarifying question only if truly needed; otherwise suggest pain-free alternatives from the catalog, load reductions, and relevant mobility or rehab work. Use the propose_* tools so your suggestions take effect (see below). Prefer keeping the movement pattern and training effect while removing the painful position (e.g. neutral grip, reduced range, machine or dumbbell versions).
 - Safety: you are not a medical professional. If the user describes sharp or sudden pain, a pop, swelling, numbness or tingling, pain that persists at rest or at night, or chest pain/dizziness, tell them to stop the exercise and see a doctor or physiotherapist. Never encourage training through sharp pain. Mild, familiar discomfort that stays at or below about 3/10 and settles within 24 hours is generally acceptable to train around.
 - Only recommend exercises by catalog id via the tools; you may mention others in text but tools must use catalog ids.
@@ -69,6 +94,8 @@ Your job:
 - Health profile: whenever the user tells you something lasting about their body or preferences (a sore or injured joint, an exercise that hurts, one that feels great, one they dislike, relevant history like surgery or a desk job), call record_health_note right away — it saves immediately and the user can undo it. Don't record trivia or repeat what's already in the profile. Respect the profile in every recommendation: never suggest exercises listed under "Avoid", and favour ones that are easy on sensitive joints.
 - When the user skipped an exercise or sets (shown in context with the reason), take that reason into account.
 - Weights are in the user's units. Describe today's changes as done ("I've swapped…"); describe future-session changes as suggestions for the user to approve.
+- Make at most ${MAX_PROPOSALS} changes per reply (swaps, load changes, added exercises, program or joint changes) and at most ${MAX_HEALTH_NOTES} health notes. Pick the ones that matter most; the user can ask for more.
+- Write your whole reply in the same response as your tool calls. You won't see the results or get another turn, so don't plan to follow up.
 
 Exercise catalog — only exercises the user has equipment for (id|name|muscles|joints it stresses):
 ${catalogFor(equipment)}`;
@@ -184,10 +211,12 @@ export const TOOLS = [
  * (dynamic filtering) or server-side refusal fallbacks, so they get the basic search tool
  * and no fallback. Opus and Sonnet fall back to another model if a safety classifier declines.
  */
-export function requestOptionsFor(model: string) {
+export function requestOptionsFor(model: string, withSearch = true) {
   const haiku = model.startsWith('claude-haiku');
+  const search = haiku ? [{ ...WEB_SEARCH, type: 'web_search_20250305' }] : [WEB_SEARCH];
   return {
-    tools: haiku ? [{ ...WEB_SEARCH, type: 'web_search_20250305' }, ...TOOLS.slice(1)] : TOOLS,
+    // Web search is only offered when the user asked for research: it's the priciest tool.
+    tools: withSearch ? [...search, ...TOOLS.slice(1)] : TOOLS.slice(1),
     fallback: haiku ? {} : { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' },
   };
 }
@@ -197,27 +226,40 @@ export function requestOptionsFor(model: string) {
 
 type SetLike = { kind: string; target_reps: number | null; target_weight: number | null; actual_reps: number | null; actual_weight: number | null; done: boolean; amrap: boolean; skipped?: boolean };
 
-function fmtSet(s: SetLike) {
-  const w = s.kind === 'warmup' ? 'w ' : '';
-  if (s.skipped) return `${w}skipped`;
-  if (s.done) return `${w}${s.actual_weight ?? 'BW'}×${s.actual_reps} ✓`;
-  return `${w}${s.target_weight ?? 'BW'}×${s.target_reps ?? '?'}${s.amrap ? '+' : ''} (not done)`;
-}
-
 function exName(id: string) { return EXERCISE_MAP.get(id)?.name ?? id; }
 
-export async function buildContext(db: Db, workout: LoadedWorkout | null, today: string): Promise<string> {
+/** One exercise's sets in a few words: what's done, what's left, warm-ups and skips. */
+function compactSets(sets: SetLike[]): string {
+  const work = sets.filter((x) => x.kind !== 'warmup');
+  const warm = sets.filter((x) => x.kind === 'warmup');
+  const done = work.filter((x) => x.done).map((x) => `${x.actual_weight ?? 'BW'}×${x.actual_reps}`);
+  const left = work.filter((x) => !x.done && !x.skipped);
+  const leftTargets = [...new Set(left.map((x) => `${x.target_weight ?? 'BW'}×${x.target_reps ?? '?'}${x.amrap ? '+' : ''}`))];
+  const parts = [];
+  if (warm.length) parts.push(`warm-ups ${warm.filter((x) => x.done).length}/${warm.length}`);
+  if (done.length) parts.push(`done ${done.join(',')}`);
+  if (left.length) parts.push(`${left.length} left at ${leftTargets.join('/')}`);
+  const skipped = work.filter((x) => x.skipped).length;
+  if (skipped) parts.push(`${skipped} skipped`);
+  return parts.join('; ') || 'no sets';
+}
+
+/**
+ * What the coach knows about the user, kept small: simple questions get the profile and today's
+ * exercise list; everything else also gets the program, set details and recent sessions.
+ */
+export async function buildContext(db: Db, workout: LoadedWorkout | null, today: string, kind: QuestionKind | 'research' = 'personal'): Promise<string> {
+  const full = kind !== 'simple';
   const p = await loadProfile(db);
-  const sp = await loadProgram(db);
+  const sp = full ? await loadProgram(db) : null;
   const lines: string[] = [`Today: ${today}`];
   lines.push(`Profile: goal=${p.goal}, experience=${p.experience}, units=${p.units}, ${p.daysPerWeek} days/week, ~${p.sessionMinutes} min sessions, bodyweight=${p.bodyweight ?? 'unknown'}`);
   lines.push(`Equipment: ${p.equipment.join(', ') || 'none listed'}`);
   lines.push(`Protected joints: ${p.limitations.join(', ') || 'none'}${p.limitationNotes ? ` — notes: ${p.limitationNotes}` : ''}`);
   if (sp) {
-    lines.push('', 'Program (slot_id: exercise):');
+    lines.push('', 'Program (slot_id=exercise):');
     sp.program.days.forEach((d, i) => {
-      lines.push(`Day ${i + 1} ${d.key} "${d.name}"${i === sp.nextDay ? ' (next up)' : ''}: ` +
-        d.slots.map((s) => `${s.id} [${s.tier}] ${s.exerciseId}`).join('; '));
+      lines.push(`${d.key}${i === sp.nextDay ? ' (next)' : ''}: ${d.slots.map((s) => `${s.id}=${s.exerciseId}`).join(', ')}`);
     });
   }
   const healthNotes = must(await db.from('health_notes').select('*').order('created_at', { ascending: false }).limit(200)) as HealthNote[];
@@ -233,26 +275,27 @@ export async function buildContext(db: Db, workout: LoadedWorkout | null, today:
         continue;
       }
       const role = e.stretch_when && e.stretch_for ? `stretch ${e.stretch_when} ${exName(e.stretch_for)}, ` : '';
-      lines.push(`- workout_exercise_id=${e.id} ${exName(e.exercise_id)} (${e.exercise_id}) [${role}${e.tier} ${e.scheme_label}]: ` +
-        e.sets.map(fmtSet).join(', ') + (e.notes ? ` — note: ${e.notes}` : ''));
+      lines.push(`- workout_exercise_id=${e.id} ${exName(e.exercise_id)} (${e.exercise_id}) [${role}${e.tier} ${e.scheme_label}]` +
+        (full ? `: ${compactSets(e.sets)}` : '') + (e.notes ? ` — note: ${e.notes}` : ''));
       const skippedSets = e.sets.filter((x) => x.skipped);
-      if (skippedSets.length) {
+      if (full && skippedSets.length) {
         const why = parseSkip(skippedSets[skippedSets.length - 1].skip_reason);
-        lines.push(`  (${skippedSets.length} set(s) skipped${why ? `: ${describeSkip(why)}` : ''})`);
+        if (why) lines.push(`  (skipped sets: ${describeSkip(why)})`);
       }
     }
     if (w.notes) lines.push(`Workout notes: ${w.notes}`);
   }
-  const recent = must(await db.from('workouts').select('id').eq('status', 'completed')
-    .order('date', { ascending: false }).order('id', { ascending: false }).limit(RECENT_SESSIONS)) as Array<{ id: number }>;
+  const recent = full ? must(await db.from('workouts').select('id').eq('status', 'completed')
+    .order('date', { ascending: false }).order('id', { ascending: false }).limit(RECENT_SESSIONS)) as Array<{ id: number }> : [];
   if (recent.length) {
-    lines.push('', 'Recent sessions (top working sets):');
+    lines.push('', 'Recent sessions (best set per exercise):');
     for (const r of recent) {
       const { workout: w, exercises } = await loadWorkout(db, r.id);
       const parts = exercises.map((e) => {
         const done = e.sets.filter((s) => s.done && s.kind === 'working');
         if (!done.length) return null;
-        return `${exName(e.exercise_id)} ${done.map((s) => `${s.actual_weight ?? 'BW'}×${s.actual_reps}`).join(',')}${e.notes ? ` ("${e.notes}")` : ''}`;
+        const best = done.reduce((a, b) => ((b.actual_weight ?? 0) > (a.actual_weight ?? 0) || ((b.actual_weight ?? 0) === (a.actual_weight ?? 0) && (b.actual_reps ?? 0) > (a.actual_reps ?? 0)) ? b : a));
+        return `${exName(e.exercise_id)} ${best.actual_weight ?? 'BW'}×${best.actual_reps}${e.notes ? ` ("${e.notes}")` : ''}`;
       }).filter(Boolean);
       lines.push(`- ${w.date} ${w.title}: ${parts.join('; ')}${w.notes ? ` | notes: ${w.notes}` : ''}`);
     }
@@ -367,6 +410,9 @@ export interface CoachUsage extends UsageTotals {
   offTopic?: boolean;
   /** Onboarding: 'intake_extract' (reading the user's description, hidden) or 'plan' (explaining their plan). */
   kind?: string;
+  /** Chat: the user's class and how the question was routed (simple, personal, safety, research). */
+  tier?: Tier;
+  route?: string;
 }
 
 export interface MessageRow {
@@ -395,6 +441,16 @@ export interface CoachLimits {
 
 export const DEFAULT_LIMITS: CoachLimits = {
   budgetUsd: DEFAULT_MONTHLY_BUDGET_USD, totalBudgetUsd: DEFAULT_TOTAL_BUDGET_USD, hourly: DEFAULT_HOURLY_LIMIT, daily: DEFAULT_DAILY_LIMIT,
+};
+
+/**
+ * Limits by user class (each can be overridden with a secret; see the coach function). Free users
+ * get a small monthly allowance on the cheap models; admins have no limits.
+ */
+export const TIER_LIMITS: Record<Tier, CoachLimits> = {
+  free: { budgetUsd: 0.5, totalBudgetUsd: DEFAULT_TOTAL_BUDGET_USD, hourly: 10, daily: 20 },
+  paid: { ...DEFAULT_LIMITS },
+  admin: { budgetUsd: 0, totalBudgetUsd: 0, hourly: 0, daily: 0 },
 };
 
 interface LimitStats { user_month: number; all_month: number; last_hour: number; last_day: number }
@@ -438,24 +494,26 @@ type AnthropicLike = any;
  * proposed actions) in coach_messages, and returns the reply row.
  */
 export async function runCoach(opts: {
-  db: Db; admin: Db; userId: string; anthropic: AnthropicLike; model?: string; workoutId: number | null; text: string; today?: string;
-  /** The user tapped "Research": search the web and think harder. */
+  db: Db; admin: Db; userId: string; anthropic: AnthropicLike; workoutId: number | null; text: string; today?: string;
+  /** Force one model for every question (the COACH_MODEL secret). Otherwise questions are routed by `tier`. */
+  model?: string;
+  /** The user's class; decides which models answer. Defaults to paid. */
+  tier?: Tier;
+  /** The user tapped "Research": search the web and think harder (paid users). */
   research?: boolean;
   limits?: Partial<CoachLimits>;
 }): Promise<MessageRow> {
   const { db, admin, userId, anthropic, workoutId } = opts;
+  const tier: Tier = opts.tier ?? 'paid';
   const text = opts.text.trim().slice(0, MAX_MESSAGE_CHARS);
-  const model = opts.model || DEFAULT_MODEL;
   const today = opts.today ?? new Date().toISOString().slice(0, 10);
   const limits = { ...DEFAULT_LIMITS, ...opts.limits };
   const budget = limits.budgetUsd;
   const stats = await limitStats(admin, userId);
   checkLimits(stats, limits);
   const spent = stats.user_month;
-  const effort = chooseEffort(text, !!opts.research);
   const profile = await loadProfile(db);
   const system = buildSystem(profile.equipment);
-  const modelOpts = requestOptionsFor(model);
   const store = async (row: Record<string, unknown>) =>
     must(await admin.from('coach_messages').insert({ user_id: userId, workout_id: workoutId, ...row }).select('*').single()) as MessageRow;
 
@@ -473,26 +531,36 @@ export async function runCoach(opts: {
   const history = (must(await historyQuery) as Array<{ role: 'user' | 'assistant'; content: string; usage: { kind?: string } | null }>)
     .filter((m) => !isHiddenMessage(m)).slice(0, MAX_HISTORY).reverse();
 
-  // Screen the message with Haiku (fractions of a cent) while the context loads.
+  // Screen and classify the message with Haiku (a fraction of a cent), then pick the model.
   const lastReply = history.findLast((m) => m.role === 'assistant')?.content;
-  const [topic, context] = await Promise.all([checkTopic(anthropic, text, lastReply), buildContext(db, workout, today)]);
+  const topic = await checkTopic(anthropic, text, lastReply);
+  const routed = routeFor(tier, topic.kind, !!opts.research);
+  const route: Route = opts.model
+    ? { ...routed, model: opts.model, effort: chooseEffort(text, routed.research), research: !!opts.research && tier !== 'free' }
+    : routed;
+  const { model, effort } = route;
+  const modelOpts = requestOptionsFor(model, route.research);
+  const context = topic.onTopic ? await buildContext(db, workout, today, route.kind) : '';
   if (!topic.onTopic) {
     await store({ role: 'user', content: text });
     const record: CoachUsage = {
       ...topic.usage, model: 'claude-haiku-5-5', effort: 'low', costUsd: topic.costUsd, topicCostUsd: topic.costUsd, offTopic: true,
-      budgetUsd: budget, monthSpentUsd: Math.round((spent + topic.costUsd) * 10_000) / 10_000,
+      tier, budgetUsd: budget, monthSpentUsd: Math.round((spent + topic.costUsd) * 10_000) / 10_000,
     };
     return store({ role: 'assistant', content: OFF_TOPIC_REPLY, usage: record, cost_usd: topic.costUsd });
   }
 
   // deno-lint-ignore no-explicit-any
-  const messages: any[] = history.map((m) => ({ role: m.role, content: m.content || '(no text)' }));
+  const messages: any[] = history.map((m) => ({
+    role: m.role,
+    content: (m.role === 'assistant' && m.content.length > HISTORY_REPLY_CHARS ? `${m.content.slice(0, HISTORY_REPLY_CHARS)}…` : m.content) || '(no text)',
+  }));
   while (messages.length && messages[0].role !== 'user') messages.shift();
   messages.push({
     role: 'user',
     content: [
       { type: 'text', text: `<context>\n${context}\n</context>` },
-      { type: 'text', text: opts.research ? `${text}\n\n(Research requested: please search for supporting evidence.)` : text },
+      { type: 'text', text: route.research ? `${text}\n\n(Research requested: please search for supporting evidence.)` : text },
     ],
   });
 
@@ -502,15 +570,19 @@ export async function runCoach(opts: {
   const texts: string[] = [];
   const sources = new Map<string, string>();
   const usage = emptyUsage();
+  let proposals = 0;
+  let healthNotes = 0;
+  let followUps = 0;
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     const msg = await anthropic.beta.messages.stream({
       model,
       // Thinking counts toward this. Quick answers get less room than injury/research questions.
-      max_tokens: effort === 'low' ? 4000 : 8000,
-      // Breakpoint 1: tools + system (stable per user). Top-level cache_control adds a moving
-      // breakpoint at the end of the conversation, so tool-call rounds and follow-ups reuse it.
-      system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
+      max_tokens: effort === 'low' ? 2500 : 6000,
+      // Tools + system stay the same for a user, so they're cached for an hour (mid-workout questions
+      // are often more than 5 minutes apart). Top-level cache_control adds a 5-minute breakpoint at
+      // the end of the conversation for any follow-up round.
+      system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral', ttl: '1h' } }],
       cache_control: { type: 'ephemeral' },
       tools: modelOpts.tools,
       messages,
@@ -538,11 +610,18 @@ export async function runCoach(opts: {
     if (msg.stop_reason !== 'tool_use') break;
 
     const results = [];
+    let fixable = false;
     for (const block of msg.content) {
       if (block.type !== 'tool_use') continue;
+      const isNote = block.name === 'record_health_note';
+      if (isNote ? healthNotes >= MAX_HEALTH_NOTES : proposals >= MAX_PROPOSALS) {
+        results.push({ type: 'tool_result', tool_use_id: block.id, is_error: true, content: 'Limit for this reply reached; not applied.' });
+        continue;
+      }
       try {
         const action = await toAction(db, workout, block.name, block.input as Record<string, unknown>);
         actions.push(action);
+        if (isNote) healthNotes++; else proposals++;
         results.push({ type: 'tool_result', tool_use_id: block.id, content: action.type === 'health'
           ? 'Saved to the health profile (the user can undo).'
           : (SESSION_ACTIONS as readonly string[]).includes(action.type)
@@ -550,15 +629,20 @@ export async function runCoach(opts: {
             : `Shown to the user as a button: "${action.label}". Not applied until they approve.` });
       } catch (err) {
         results.push({ type: 'tool_result', tool_use_id: block.id, is_error: true, content: (err as Error).message });
+        fixable = true;
       }
     }
+    // One round is enough: the app checks and applies the changes itself, and the reply is already
+    // written. Go back only once, if a change was invalid (e.g. a wrong id) or there's no reply text.
+    if ((!fixable && turnText.trim()) || followUps >= 1) break;
+    followUps++;
     messages.push({ role: 'user', content: results });
   }
 
   const content = texts.join('\n\n').trim() || (actions.length ? 'Here are some changes you can apply:' : 'I don\'t have a suggestion for that.');
   const cost = Math.round((costUsd(model, usage) + topic.costUsd) * 10_000) / 10_000;
   const record: CoachUsage = {
-    ...usage, model, effort, costUsd: cost, topicCostUsd: topic.costUsd, budgetUsd: budget,
+    ...usage, model, effort, costUsd: cost, topicCostUsd: topic.costUsd, budgetUsd: budget, tier, route: route.kind,
     monthSpentUsd: Math.round((spent + cost) * 10_000) / 10_000,
   };
   return store({

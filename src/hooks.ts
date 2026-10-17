@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { EXERCISES } from '../supabase/functions/_shared/exercises.ts';
-import type { Exercise, Profile, User } from './api';
+import { getMyPlan, type Exercise, type MyPlan, type Profile, type User } from './api';
 
 export function useAsync<T>(loader: () => Promise<T>, deps: unknown[]) {
   const [data, setData] = useState<T | null>(null);
@@ -82,4 +82,24 @@ export function pref(key: string, fallback = true): boolean {
     const v = localStorage.getItem(key);
     return v == null ? fallback : v !== 'off';
   } catch { return fallback; }
+}
+
+// ---------------------------------------------------------------------------
+// The user's plan (free / paid / admin), fetched once and shared.
+
+let planPromise: Promise<MyPlan | null> | null = null;
+
+/** Forget the cached plan (after sign-out, or to show fresh usage). */
+export function refreshPlan() { planPromise = null; }
+
+/** The signed-in user's plan: undefined while loading, null if the coach function couldn't say. */
+export function usePlan(fresh = false): MyPlan | null | undefined {
+  const [plan, setPlan] = useState<MyPlan | null | undefined>(undefined);
+  useEffect(() => {
+    if (fresh) refreshPlan();
+    let live = true;
+    (planPromise ??= getMyPlan().catch(() => null)).then((p) => { if (live) setPlan(p); });
+    return () => { live = false; };
+  }, [fresh]);
+  return plan;
 }

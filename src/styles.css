@@ -350,3 +350,12 @@ input, select, textarea { font-size: 16px; } /* < 16px makes iOS zoom in on focu
 }
 .swipe-reveal.from-right { left: 100%; justify-content: flex-start; }
 .swipe-reveal.from-left { right: 100%; justify-content: flex-end; }
+
+/* Admin */
+.admin-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.admin-table th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px 0; border-bottom: 1px solid var(--border); }
+.admin-table td { padding: 6px 0; border-bottom: 1px solid var(--border); }
+.admin-table th:not(:first-child), .admin-table td:not(:first-child) { text-align: right; }
+.admin-user { padding: 10px 0; border-top: 1px solid var(--border); }
+.admin-user .chips { flex-wrap: nowrap; gap: 6px; }
+.admin-user .chip { min-height: 34px; padding: 6px 12px; }

@@ -75,6 +75,8 @@ export interface CoachAction {
 export interface CoachMessage {
   id: number; role: 'user' | 'assistant'; content: string; createdAt: string; actions: CoachAction[]; sources: Array<{ url: string; title: string }>;
   costUsd: number | null; effort: 'low' | 'medium' | null; webSearches: number;
+  /** Which model answered and why (simple, personal, safety, research); shown to admins. */
+  model?: string | null; route?: string | null;
 }
 
 export interface Summary {

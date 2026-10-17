@@ -15,7 +15,7 @@ export function CoachPage() {
       <div className="page-header" style={{ marginBottom: 0 }}>
         <div>
           <h1>Coach</h1>
-          <p className="small muted" style={{ margin: 0 }}>Research-backed answers, with changes you approve. Not medical advice.</p>
+          <p className="small muted" style={{ margin: 0 }}>Answers that fit your training. Not medical advice.</p>
         </div>
       </div>
       <CoachChat workoutId={null} suggestions={SUGGESTIONS} initialPrompt={params.get('prompt') ?? undefined} />

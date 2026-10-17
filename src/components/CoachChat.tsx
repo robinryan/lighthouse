@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { applyAction, applySessionActions, askCoach, CoachNotConfiguredError, listMessages, makeSwapPermanent, undoAction, type CoachMessage } from '../api';
 import type { CoachAction } from '../data/types';
-import { useAsync, useOnline } from '../hooks';
+import { refreshPlan, useAsync, useOnline, usePlan } from '../hooks';
 
 /** Tiny, safe markdown subset: paragraphs, bullet/numbered lists, **bold**, headings rendered bold. */
 function inline(text: string): ReactNode[] {
@@ -29,6 +29,7 @@ export function Markdown({ text }: { text: string }) {
 }
 
 const SESSION_TYPES = ['swap', 'load', 'add'];
+const MODEL_NAMES: Record<string, string> = { 'claude-haiku-5-5': 'Haiku', 'claude-sonnet-5-5': 'Sonnet', 'claude-opus-5-5': 'Opus' };
 
 /** Group the conversation into exchanges (a question and the coach's reply), newest first. */
 function exchanges(messages: CoachMessage[]): CoachMessage[][] {
@@ -48,6 +49,9 @@ export function CoachChat({ workoutId, suggestions, onApplied, initialPrompt }: 
   const [text, setText] = useState(initialPrompt ?? '');
   const [sending, setSending] = useState(false);
   const [research, setResearch] = useState(false);
+  const plan = usePlan();
+  const isAdmin = plan?.tier === 'admin';
+  const canResearch = plan ? plan.research : true;
   const [error, setError] = useState<string | null>(null);
   const topRef = useRef<HTMLDivElement>(null);
   const online = useOnline();
@@ -64,7 +68,8 @@ export function CoachChat({ workoutId, suggestions, onApplied, initialPrompt }: 
     const optimistic: CoachMessage = { id: -Date.now(), role: 'user', content: body, createdAt: '', actions: [], sources: [], costUsd: null, effort: null, webSearches: 0 };
     setData({ ...data, messages: [...data.messages, optimistic] });
     try {
-      const reply = await askCoach(workoutId, body, research);
+      const reply = await askCoach(workoutId, body, research && canResearch);
+      refreshPlan();
       setResearch(false);
       // Changes to today's workout take effect right away (each can be undone).
       if (reply.actions.some((a) => a.status === 'pending' && SESSION_TYPES.includes(a.type))) {
@@ -139,9 +144,9 @@ export function CoachChat({ workoutId, suggestions, onApplied, initialPrompt }: 
           <div className="row wrap" style={{ marginTop: 6 }}>{actionControls(m, a, i)}</div>
         </div>
       ))}
-      {m.role === 'assistant' && m.costUsd != null && (
+      {isAdmin && m.role === 'assistant' && m.costUsd != null && (
         <div className="tiny muted" style={{ marginTop: 4 }}>
-          ≈ ${m.costUsd < 0.01 ? '<0.01' : m.costUsd.toFixed(2)}{m.effort === 'low' ? ' · quick answer' : ''}{m.webSearches ? ` · ${m.webSearches} search${m.webSearches > 1 ? 'es' : ''}` : ''}
+          ≈ ${m.costUsd < 0.01 ? m.costUsd.toFixed(4) : m.costUsd.toFixed(2)}{m.model ? ` · ${MODEL_NAMES[m.model] ?? m.model}` : ''}{m.route ? ` · ${m.route}` : ''}{m.webSearches ? ` · ${m.webSearches} search${m.webSearches > 1 ? 'es' : ''}` : ''}
         </div>
       )}
       {m.sources.length > 0 && (
@@ -168,11 +173,13 @@ export function CoachChat({ workoutId, suggestions, onApplied, initialPrompt }: 
           onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void send(text); } }}
         />
         <div className="row" style={{ gap: 8 }}>
-          <button type="button" className={`chip ${research ? 'on' : ''}`} onClick={() => setResearch((v) => !v)} aria-pressed={research}
-            title="Search reputable sources for evidence (slower, costs a little more)">
-            🔎 Research{research ? ' on' : ''}
+          <button type="button" className={`chip ${research && canResearch ? 'on' : ''}`} onClick={() => setResearch((v) => !v)} aria-pressed={research}
+            disabled={!canResearch} title={canResearch ? 'Search reputable sources for evidence (slower)' : 'Research is part of the paid plan'}>
+            🔎 Research{research && canResearch ? ' on' : ''}
           </button>
-          <span className="tiny muted grow">{research ? 'Will search studies & clinical sources' : 'Answers from training knowledge'}</span>
+          <span className="tiny muted grow">
+            {!canResearch ? 'Research with studies is part of the paid plan' : research ? 'Will search studies & clinical sources' : 'Answers from training knowledge'}
+          </span>
           <button className="btn primary" disabled={sending || !text.trim() || !online}>{sending ? 'Sending…' : 'Send'}</button>
         </div>
       </form>
@@ -202,7 +209,7 @@ export function CoachChat({ workoutId, suggestions, onApplied, initialPrompt }: 
             {t === 0 && sending && (
               <div className="bubble assistant">
                 <div className="typing"><span /><span /><span /></div>
-                <div className="tiny muted" style={{ marginTop: 4 }}>{research ? 'Researching — can take ~30s' : 'Thinking…'}</div>
+                <div className="tiny muted" style={{ marginTop: 4 }}>{research && canResearch ? 'Researching — can take ~30s' : 'Thinking…'}</div>
               </div>
             )}
           </div>

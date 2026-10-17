@@ -11,7 +11,7 @@ import * as T from '../src/data/training.ts';
 import * as S from '../src/data/stats.ts';
 import { applyAction, listMessages } from '../src/data/coach.ts';
 import { runCoach } from '../supabase/functions/_shared/coach.ts';
-import type { FullProfile } from '../supabase/functions/_shared/queries.ts';
+import { type FullProfile, must } from '../supabase/functions/_shared/queries.ts';
 
 const ADMIN_URL = process.env.TEST_DATABASE_URL;
 const dbName = `lh_test_${process.pid}`;
@@ -201,8 +201,10 @@ test('coach core: proposals are validated, stored, and applied by the app', { sk
   assert.equal(requests[0].model, 'claude-opus-5-5');
   assert.equal(requests[0].fallbacks, 'default');
   assert.deepEqual(requests[0].betas, ['server-side-fallback-2026-07-01']);
-  assert.ok(requests[0].tools.some((t: any) => t.type === 'web_search_20260209'));
+  assert.ok(!requests[0].tools.some((t: any) => String(t.type).startsWith('web_search')), 'web search only when Research is on');
   assert.match(requests[0].messages.at(-1).content[0].text, new RegExp(`workout_exercise_id=${bench.id}`));
+  // A wrong id is the one case that earns a second round, so the coach can fix it.
+  assert.equal(requests.length, 2);
   const results = requests[1].messages.at(-1).content;
   assert.equal(results.find((r: any) => r.tool_use_id === 't3').is_error, true);
 
@@ -374,9 +376,12 @@ test('coach cost controls: caching, trimmed prompt, effort, search limits, usage
   assert.equal(chooseEffort('what should I eat', false), 'low');
 
   const req = requests[0];
-  assert.deepEqual(req.cache_control, { type: 'ephemeral' }, 'conversation breakpoint');
-  assert.deepEqual(req.system[0].cache_control, { type: 'ephemeral' }, 'system breakpoint');
-  const search = req.tools.find((t: any) => t.type === 'web_search_20260209');
+  assert.deepEqual(req.cache_control, { type: 'ephemeral' }, 'conversation breakpoint (5 min)');
+  assert.deepEqual(req.system[0].cache_control, { type: 'ephemeral', ttl: '1h' }, 'system breakpoint (1 hour)');
+  // Routing (paid by default): a personal question → Sonnet, pain → Opus, research → Opus with web search.
+  assert.deepEqual(requests.map((r) => r.model), ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-opus-5-5']);
+  assert.ok(!req.tools.some((t: any) => String(t.type).startsWith('web_search')));
+  const search = requests[2].tools.find((t: any) => t.type === 'web_search_20260209');
   assert.equal(search.max_uses, 2);
   assert.ok(search.allowed_domains.includes('pubmed.ncbi.nlm.nih.gov'));
   assert.ok(!JSON.stringify(req.tools).includes('"enum":["squat"'), 'no exercise-id enums');
@@ -385,9 +390,9 @@ test('coach cost controls: caching, trimmed prompt, effort, search limits, usage
   const approxTokens = (buildSystem(['barbell', 'dumbbell', 'cable', 'machine', 'pullup_bar', 'band']).length / 3.6) + (JSON.stringify(TOOLS).length / 3.2);
   assert.ok(approxTokens < 4000, `prompt ≈ ${Math.round(approxTokens)} tokens`);
 
-  // History trimmed to the last 10 messages.
+  // History trimmed to the last 4 messages.
   for (let i = 0; i < 6; i++) await runCoach({ db: asE, admin: asAdmin, userId: E.id, anthropic, workoutId: null, text: `question ${i}`, today: '2026-10-10', limits: { budgetUsd: 100 } });
-  assert.ok(requests.at(-1).messages.length <= 11, `messages sent: ${requests.at(-1).messages.length}`);
+  assert.ok(requests.at(-1).messages.length <= 5, `messages sent: ${requests.at(-1).messages.length}`);
 
   // Usage and cost are stored with the reply.
   assert.equal(r3.usage!.effort, 'medium');
@@ -397,14 +402,14 @@ test('coach cost controls: caching, trimmed prompt, effort, search limits, usage
   assert.equal(r3.usage!.topicCostUsd, 0.0004, 'Haiku topic check: 3000 in × $0.10 + 200 out × $0.50 per MTok');
   assert.ok(Math.abs(r3.cost_usd! - (opusCost + 0.0004)) < 1e-6);
 
-  // Budget: 9 replies × ~$0.041 ≈ $0.37 spent; a $0.30 cap blocks the next message without calling the API.
+  // Budget: 2 Opus + 7 Sonnet replies ≈ $0.26 spent; a $0.20 cap blocks the next message without calling the API.
   const before = requests.length;
-  await assert.rejects(runCoach({ db: asE, admin: asAdmin, userId: E.id, anthropic, workoutId: null, text: 'one more', today: '2026-10-10', limits: { budgetUsd: 0.3 } }), /budget/);
+  await assert.rejects(runCoach({ db: asE, admin: asAdmin, userId: E.id, anthropic, workoutId: null, text: 'one more', today: '2026-10-10', limits: { budgetUsd: 0.2 } }), /budget/);
   assert.equal(requests.length, before);
   const { coachUsageThisMonth } = await import('../src/data/coach.ts');
   const month = await coachUsageThisMonth();
   assert.equal(month.messages, 9);
-  assert.ok(month.spentUsd > 0.3);
+  assert.ok(month.spentUsd > 0.2);
 });
 
 test('coach abuse guards: locked-down messages, limits, topic screen', { skip: !ADMIN_URL && 'TEST_DATABASE_URL not set' }, async () => {
@@ -504,16 +509,15 @@ test('coach changes to today\'s workout apply automatically and can be undone', 
       { type: 'tool_use', id: 'c', name: 'propose_add_exercise', input: { exercise_id: 'wrist_extensor_stretch', sets: 2, reps: 30, rest_seconds: 15, note: 'Gentle.' } },
       { type: 'tool_use', id: 'd', name: 'propose_limitations', input: { add: ['elbow'], remove: [], note: 'Elbow' } },
     ] },
-    { stop_reason: 'end_turn', content: [] },
-  ];
+  ] as any[];
   const requests: any[] = [];
   const anthropic = { messages: { create: ON_TOPIC }, beta: { messages: { stream: (req: any) => { requests.push(structuredClone(req)); const m = script.shift(); return { finalMessage: async () => m }; } } } };
   const reply = await runCoach({ db: asG, admin: asAdmin, userId: G.id, anthropic, workoutId: id, text: 'Elbow is sore', today: '2026-10-15' });
-  // The coach is told which changes already took effect.
-  const results = requests[1].messages.at(-1).content;
-  assert.match(results.find((r: any) => r.tool_use_id === 'a').content, /Applied to today's workout/);
-  assert.match(results.find((r: any) => r.tool_use_id === 'd').content, /Not applied until they approve/);
+  // One round: the reply is written alongside the changes, and a 4th change is over the limit.
+  assert.equal(requests.length, 1);
+  assert.deepEqual(reply.actions.map((a) => a.type), ['swap', 'load', 'add']);
   assert.match(requests[0].system[0].text, /applied to the current session immediately/);
+  assert.match(requests[0].system[0].text, /at most 3 changes per reply/);
 
   // The app applies the session changes; the future-session change waits.
   assert.equal(await applySessionActions(reply.id), 3);
@@ -525,8 +529,17 @@ test('coach changes to today\'s workout apply automatically and can be undone', 
   assert.ok(newSquat.every((wt, i) => wt! < squatTargets[i]!), 'squat lighter');
   assert.ok(after.exercises.some((e) => e.exerciseId === 'wrist_extensor_stretch'), 'stretch added');
   let msg = (await listMessages(id)).at(-1)!;
-  assert.deepEqual(msg.actions.map((a) => a.status), ['applied', 'applied', 'applied', 'pending']);
+  assert.deepEqual(msg.actions.map((a) => a.status), ['applied', 'applied', 'applied']);
   assert.equal(await applySessionActions(reply.id), 0, 'nothing applied twice');
+
+  // A future-session change waits for the user.
+  script.push({ stop_reason: 'tool_use', content: [
+    { type: 'text', text: 'I can protect that elbow in future programs.' },
+    { type: 'tool_use', id: 'e', name: 'propose_limitations', input: { add: ['elbow'], remove: [], note: 'Elbow' } },
+  ] });
+  const later = await runCoach({ db: asG, admin: asAdmin, userId: G.id, anthropic, workoutId: id, text: 'Elbow still sore', today: '2026-10-15' });
+  assert.deepEqual(later.actions.map((a) => `${a.type}:${a.status}`), ['limitations:pending']);
+  assert.equal(await applySessionActions(later.id), 0);
 
   // Keep the swap for future sessions, then undo everything.
   await makeSwapPermanent(reply.id, 0);
@@ -539,8 +552,8 @@ test('coach changes to today\'s workout apply automatically and can be undone', 
   assert.equal((await T.getProgram())!.program.days[0].slots.find((s) => s.id === benchSlot.id)!.exerciseId, 'bench', 'program restored');
   assert.deepEqual(after.exercises.find((e) => e.exerciseId === 'squat')!.sets.filter((s) => s.kind === 'working').map((s) => s.targetWeight), squatTargets);
   assert.ok(!after.exercises.some((e) => e.exerciseId === 'wrist_extensor_stretch'));
-  msg = (await listMessages(id)).at(-1)!;
-  assert.deepEqual(msg.actions.map((a) => a.status), ['undone', 'undone', 'undone', 'pending']);
+  msg = (await listMessages(id)).find((m) => m.id === reply.id)!;
+  assert.deepEqual(msg.actions.map((a) => a.status), ['undone', 'undone', 'undone']);
   await assert.rejects(undoAction(reply.id, 0), /Nothing to undo/);
 });
 
@@ -603,4 +616,72 @@ test('onboarding in your own words: read, pre-fill, health profile, plan explain
   const chatAnthropic = { messages: { create: ON_TOPIC }, beta: { messages: { stream: (req: any) => { chatReq.push(structuredClone(req)); return { finalMessage: async () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: 'ok' }], usage: {} }) }; } } } };
   await runCoach({ db: asH, admin: asAdmin, userId: H.id, anthropic: chatAnthropic, workoutId: null, text: 'Why no squats?', today: '2026-10-15' });
   assert.deepEqual(chatReq[0].messages.map((m: any) => m.role), ['user', 'assistant', 'user']);
+});
+
+test('user classes: free routing, smaller context, plan, admin report and class changes', { skip: !ADMIN_URL && 'TEST_DATABASE_URL not set' }, async () => {
+  const { myPlan, adminReport, setTier, resolveTier, adminEmails } = await import('../supabase/functions/_shared/tiers.ts');
+  const { TIER_LIMITS } = await import('../supabase/functions/_shared/coach.ts');
+  const J = { id: '99999999-9999-4999-8999-999999999999', email: 'free@example.com' };
+  const ADM = { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', email: 'Robin.Ryan@gmail.com' };
+  await pool.query(`INSERT INTO auth.users (id, email, raw_user_meta_data) VALUES ($1, $2, '{"name":"J"}'), ($3, $4, '{"name":"Robin"}')`, [J.id, J.email, ADM.id, ADM.email]);
+  const asJ = fakeSupabase(pool, J);
+  setDb(asJ);
+  await T.completeOnboarding(profile({ name: 'J' }), { squat: 100, bench: 70, deadlift: 120, ohp: 45 });
+  const id = await T.startWorkout({ date: '2026-10-17' });
+  const admins = adminEmails(undefined);
+
+  // Classes: email list → admin (case-insensitive); everyone else free until changed.
+  assert.equal(await resolveTier(asAdmin, ADM, admins), 'admin');
+  assert.equal(await resolveTier(asAdmin, J, admins), 'free');
+
+  const requests: any[] = [];
+  let kind = 'simple';
+  const anthropic = {
+    messages: { create: async () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify({ on_topic: true, kind }) }], usage: { input_tokens: 400, output_tokens: 20 } }) },
+    beta: { messages: { stream: (req: any) => { requests.push(structuredClone(req)); return { finalMessage: async () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: 10, output_tokens: 50 } }) }; } } },
+  };
+  const ask = (text: string, research = false) => runCoach({ db: asJ, admin: asAdmin, userId: J.id, anthropic, workoutId: id, text, today: '2026-10-17', tier: 'free', research, limits: TIER_LIMITS.free });
+  const simple = await ask('What does RPE mean?');
+  kind = 'personal';
+  await ask('Should I add weight to bench next time?', true);
+  kind = 'simple';
+  await ask('My lower back hurts on deadlifts');
+  assert.deepEqual(requests.map((r) => r.model), ['claude-haiku-5-5', 'claude-haiku-5-5', 'claude-sonnet-5-5']);
+  assert.ok(requests.every((r) => !r.tools.some((t: any) => String(t.type).startsWith('web_search'))), 'no research on free');
+  assert.ok(!/Research requested/.test(requests[1].messages.at(-1).content[1].text));
+  assert.equal(simple.usage!.tier, 'free');
+  assert.equal(simple.usage!.route, 'simple');
+  // Simple questions get a much smaller context (no program, set details or past sessions).
+  const ctx = (r: any) => r.messages.at(-1).content[0].text as string;
+  assert.ok(!/Program \(slot_id/.test(ctx(requests[0])) && /Program \(slot_id/.test(ctx(requests[1])));
+  assert.ok(ctx(requests[0]).length < ctx(requests[1]).length * 0.7, `${ctx(requests[0]).length} vs ${ctx(requests[1]).length}`);
+  assert.match(ctx(requests[1]), /left at /, 'compact set summary');
+
+  // Plan: percentage for users, dollars only for admins.
+  const plan = await myPlan(asAdmin, J.id, 'free', TIER_LIMITS.free);
+  assert.equal(plan.tier, 'free');
+  assert.equal(plan.research, false);
+  assert.ok(plan.usedPct! >= 0 && plan.spentUsd === undefined);
+  assert.equal((await myPlan(asAdmin, ADM.id, 'admin', TIER_LIMITS.admin)).usedPct, null, 'admins are unlimited');
+
+  // Users can see their own class but not change it, or read the admin report.
+  assert.ok((await asJ.from('user_tiers').insert({ user_id: J.id, tier: 'paid' })).error, 'no self-upgrade');
+  assert.ok((await asJ.rpc('coach_admin_report', {})).error, 'report is service-role only');
+
+  // Admin report and class changes.
+  let report = await adminReport(asAdmin, admins);
+  const row = report.users.find((u) => u.id === J.id)!;
+  assert.equal(row.tier, 'free');
+  assert.equal(row.month_messages, 3);
+  assert.ok(row.month_usd > 0 && row.total_usd >= row.month_usd);
+  assert.equal(report.users.find((u) => u.id === ADM.id)!.fixedAdmin, true);
+  assert.ok(report.byModel.some((m) => m.model === 'claude-haiku-5-5') && report.byModel.some((m) => m.model === 'claude-sonnet-5-5'));
+  assert.ok(report.byDay.length >= 1 && report.totals.monthUsd > 0);
+  await setTier(asAdmin, ADM.id, J.id, 'paid', admins);
+  assert.equal(await resolveTier(asAdmin, J, admins), 'paid');
+  assert.deepEqual((must(await asJ.from('user_tiers').select('tier')) as any[]).map((r) => r.tier), ['paid'], 'user sees own class');
+  await assert.rejects(setTier(asAdmin, ADM.id, ADM.id, 'free', admins), /always an admin/);
+  await assert.rejects(setTier(asAdmin, ADM.id, J.id, 'admin' as any, admins), /free and paid/);
+  report = await adminReport(asAdmin, admins);
+  assert.equal(report.users.find((u) => u.id === J.id)!.tier, 'paid');
 });

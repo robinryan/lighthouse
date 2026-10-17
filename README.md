@@ -13,7 +13,7 @@ The app uses Bolt's built-in database (Bolt Database), so you don't need a separ
 3. **Publish.** The build is `npm run build` and the output is `dist/`; `netlify.toml` already says so. At this point everything works except the coach.
 4. **Turn on the AI coach** (optional):
    - **Deploy the server function.** Ask Bolt: *"Deploy the `coach` edge function in `supabase/functions/coach`."*
-   - **Add your Anthropic key.** Open the database icon, go to the secrets settings, and add a secret named `ANTHROPIC_API_KEY`. You can also add `COACH_MODEL` to override the default model, `claude-opus-5-5`. The function also needs `SUPABASE_SERVICE_ROLE_KEY`, which Supabase normally provides on its own; if the coach says it's missing, add it from the database's API settings.
+   - **Add your Anthropic key.** Open the database icon, go to the secrets settings, and add a secret named `ANTHROPIC_API_KEY`. The function also needs `SUPABASE_SERVICE_ROLE_KEY`, which Supabase normally provides on its own; if the coach says it's missing, add it from the database's API settings.
    - **Set a spend limit with Anthropic.** In the Anthropic Console, give this app its own API key and set a monthly spend limit. That's the hard ceiling if anything else fails.
 5. **Who can sign up:** if the app is just for you, turn off "Allow new users to sign up" in the database's authentication settings once your account exists. If you open it up, keep email confirmation on and turn on CAPTCHA protection there.
 6. **Email links (password reset, magic link, confirmation).** Supabase only sends people to addresses on its allow list and falls back to its **Site URL** (by default `http://localhost:3000`) for anything else, which is why links can open a local address. In the database's authentication settings, under URL configuration:
@@ -98,15 +98,30 @@ If you ever want direct control over the database (SQL editor, backups, monitori
 - Changes to future sessions (a program slot, a joint to protect) wait for you to tap **Apply**.
 - The message box sits at the top of the chat; the newest question and answer appear right under it.
 - It isn't medical advice. It tells you to stop and see a professional for sharp pain, swelling or numbness.
-- Runs Claude Opus 5.5, with server-side refusal fallbacks enabled.
+- Each question goes to the cheapest Claude model that answers it well (see **Plans** below), with server-side refusal fallbacks on Sonnet and Opus.
+
+**Plans** (free, paid, admin)
+- Every account is **free** until an admin moves it to **paid** on the admin page. Admins are set by email: `robin.ryan@gmail.com` by default, or the comma-separated `COACH_ADMIN_EMAILS` secret.
+- A cheap Haiku check reads each question first and sorts it as *simple* (general how-to), *personal* (about your own training) or *safety* (any pain, injury or medical issue). Injury words always count as safety, even if the check says otherwise or fails. The question then goes to:
+
+  | Question | Free | Paid and admin |
+  |---|---|---|
+  | Simple | Haiku 5.5 | Haiku 5.5 |
+  | Personal | Haiku 5.5 | Sonnet 5.5 |
+  | Pain, injury, medical | Sonnet 5.5 | Opus 5.5 |
+  | 🔎 Research (web search) | not included | Opus 5.5 |
+- Onboarding (reading a new user's description and explaining their plan) uses Sonnet for free users and Opus for paid users.
+- Settings shows each user's plan and how much of this month's coach allowance they've used, as a percentage. Only admins see dollar amounts, including the cost and model of each coach reply.
+- **Admin page** (Settings → Open admin): every user with their plan, workouts, coach messages and spending this month and all time, plus spending by model and by day. A Free/Paid switch on each user changes their plan. Chat content isn't shown.
 
 **AI cost controls** (only the coach uses AI; everything else is rule-based and free to run)
-- **Usage tracking:** every reply stores its token counts, web searches, model, effort and estimated cost. Settings shows this month's total against a **monthly budget**: $10 per user by default, changed with the `COACH_MONTHLY_BUDGET_USD` secret, 0 for no cap. Once you reach it, the coach pauses until the 1st without calling the API.
-- **Smaller prompt:** the exercise list is filtered to your equipment and sent once rather than repeated in every tool definition. The fixed prompt went from about 6,200 tokens to about 3,600.
-- **Two-level caching:** one cache for the instructions and tools, and a moving one at the end of the conversation, so follow-ups and tool-call rounds reuse what's already been sent.
-- **Leaner context:** the last 10 chat messages and last 3 sessions.
-- **Web search on request:** tap 🔎 Research to search. It's capped at 2 searches per message and limited to reputable sources (PubMed, BJSM, JOSPT, Physiopedia, AAOS, Mayo Clinic, NHS, ACSM, NSCA, Stronger By Science, and others).
-- **Effort by question type:** quick questions get *low* effort; pain, injury or research questions get *medium*.
+- **Usage tracking:** every reply stores its token counts, web searches, model, question type and estimated cost.
+- **One round per reply:** the coach writes its answer alongside any changes; the app checks and applies them itself, so the conversation isn't sent back for a second round. A second round only happens if a change was invalid.
+- **At most 3 changes and 2 health notes per reply.**
+- **Small prompt:** the exercise list is filtered to your equipment. Simple questions get only your profile and today's exercise list; other questions also get the program, a one-line summary of each exercise's sets, and the best set from each of your last 3 sessions. Only the last 4 chat messages are sent, with older coach replies shortened.
+- **Caching:** the instructions and tools are cached for an hour (mid-workout questions are often more than 5 minutes apart), plus a 5-minute cache for the rest of the conversation.
+- **Web search only on request:** the search tool is attached only when 🔎 Research is on (paid). It's capped at 2 searches and limited to reputable sources (PubMed, BJSM, JOSPT, Physiopedia, AAOS, Mayo Clinic, NHS, ACSM, NSCA, Stronger By Science, and others).
+- **Short answers:** about 120 words, up to about 250 for injury and research questions.
 
 **Abuse protection** (so nobody can use the coach as a free general-purpose AI on your bill)
 - **Topic screen:** Claude Haiku 5.5 checks each message first, for a fraction of a cent. Off-topic requests (code, essays, homework, general knowledge) get a polite one-line refusal and never reach the main model. The coach's own instructions also refuse off-topic tasks.
@@ -115,11 +130,14 @@ If you ever want direct control over the database (SQL editor, backups, monitori
 
   | Secret | Default | Limit |
   |---|---|---|
-  | `COACH_MONTHLY_BUDGET_USD` | 10 | Per user, per month |
-  | `COACH_TOTAL_MONTHLY_BUDGET_USD` | 25 | All users combined, per month |
-  | `COACH_HOURLY_LIMIT` | 20 | Messages per user per hour |
-  | `COACH_DAILY_LIMIT` | 60 | Messages per user per day |
-- **Size caps:** messages are limited to 1,000 characters, and replies to 4,000 tokens (8,000 for injury and research questions).
+  | `COACH_FREE_MONTHLY_BUDGET_USD` | 0.50 | Per free user, per month |
+  | `COACH_FREE_HOURLY_LIMIT` / `COACH_FREE_DAILY_LIMIT` | 10 / 20 | Messages per free user |
+  | `COACH_PAID_MONTHLY_BUDGET_USD` | 10 | Per paid user, per month (`COACH_MONTHLY_BUDGET_USD` also works) |
+  | `COACH_TOTAL_MONTHLY_BUDGET_USD` | 25 | All free and paid users combined, per month (admins are exempt) |
+  | `COACH_PAID_HOURLY_LIMIT` / `COACH_PAID_DAILY_LIMIT` | 20 / 60 | Messages per paid user (`COACH_HOURLY_LIMIT` / `COACH_DAILY_LIMIT` also work) |
+
+  Admins have no limits. `COACH_FORCE_MODEL` sends every question to one model, for testing only; the old `COACH_MODEL` secret is ignored so it can't switch routing off.
+- **Size caps:** messages are limited to 1,000 characters, and replies to 2,500 tokens including thinking (6,000 for injury and research questions).
 
 ## Development
 

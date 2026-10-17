@@ -108,3 +108,41 @@ test('plan explanation: ties the plan to the profile and names swaps for sore jo
   assert.equal(healthSwaps({ ...profile, limitations: [] }, generateProgram({ ...profile, limitations: [] })).length, 0);
   assert.match(describeProgram(program), /^A1 /);
 });
+
+test('model routing: cheapest model that answers well, stronger models for safety', async () => {
+  const { routeFor } = await import('../supabase/functions/_shared/coach.ts');
+  const m = (tier: any, kind: any, research = false) => { const r = routeFor(tier, kind, research); return `${r.model.split('-')[1]}/${r.effort}${r.research ? '/search' : ''}`; };
+  // Free: Haiku except pain/injury (Sonnet); no research.
+  assert.equal(m('free', 'simple'), 'haiku/low');
+  assert.equal(m('free', 'personal'), 'haiku/low');
+  assert.equal(m('free', 'safety'), 'sonnet/medium');
+  assert.equal(m('free', 'personal', true), 'haiku/low', 'research is a paid feature');
+  assert.equal(m('free', 'safety', true), 'sonnet/medium');
+  // Paid and admin: Haiku → Sonnet → Opus, research on Opus.
+  for (const tier of ['paid', 'admin']) {
+    assert.equal(m(tier, 'simple'), 'haiku/low');
+    assert.equal(m(tier, 'personal'), 'sonnet/low');
+    assert.equal(m(tier, 'safety'), 'opus/medium');
+    assert.equal(m(tier, 'simple', true), 'opus/medium/search');
+  }
+});
+
+test('injury words always count as safety, whatever the classifier says', async () => {
+  const { checkTopic } = await import('../supabase/functions/_shared/topic.ts');
+  const says = (kind: string) => ({ messages: { create: async () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify({ on_topic: true, kind }) }], usage: {} }) } });
+  assert.equal((await checkTopic(says('simple'), 'my knee hurts a bit, how long should I rest?')).kind, 'safety');
+  assert.equal((await checkTopic(says('simple'), 'what is RPE?')).kind, 'simple');
+  assert.equal((await checkTopic(says('personal'), 'should I add weight to squats?')).kind, 'personal');
+  assert.equal((await checkTopic(says('bogus'), 'should I add weight?')).kind, 'personal', 'unknown kind → personal');
+  const broken = { messages: { create: async () => { throw new Error('down'); } } };
+  assert.equal((await checkTopic(broken, 'my shoulder is sore')).kind, 'safety', 'screen down → still safe');
+  assert.equal((await checkTopic(broken, 'what is RPE?')).kind, 'personal');
+});
+
+test('pricing: 1-hour cache writes cost 2× input', async () => {
+  const { addUsage, costUsd, emptyUsage } = await import('../supabase/functions/_shared/pricing.ts');
+  const t = emptyUsage();
+  addUsage(t, { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 4000, cache_creation: { ephemeral_1h_input_tokens: 3000, ephemeral_5m_input_tokens: 1000 } });
+  // Opus: 3000 × $8 + 1000 × $5 per MTok.
+  assert.equal(costUsd('claude-opus-5-5', t), Math.round((3000 * 8 + 1000 * 5) / 1e6 * 1e4) / 1e4);
+});
