@@ -74,6 +74,9 @@ export function LoginPage({ linkError = null }: { linkError?: string | null }) {
         <p className="muted">Your training buddy: a plan built around you, a logbook, and a coach in your pocket.</p>
       </div>
       <form className="card stack" onSubmit={submit}>
+        {mode === 'login' && (
+          <p className="small muted">Is this your first time using the portal? Use the "Forgot password?" link to get a magic link to sign in and set your password.</p>
+        )}
         {mode === 'register' && (
           <label className="field"><span>Name</span><input value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" required /></label>
         )}
