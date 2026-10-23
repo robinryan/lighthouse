@@ -370,6 +370,12 @@ function ExerciseCard({ ex, units, readOnly, active, isLast, nextName, onLocalCh
                 {ex.substitutedFrom ? ' · swapped' : ''}
               </div>
             )}
+            {!ex.stretch && ex.previous.length > 0 && (
+              <div className="small muted num">
+                Last time{ex.previousDate ? ` (${new Date(`${ex.previousDate}T12:00:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })})` : ''}:{' '}
+                {ex.previous.map((p) => (ex.loadType === 'time' ? `${p.reps}s` : p.weight ? `${fmtNum(p.weight)}×${p.reps}` : `×${p.reps}`)).join(', ')}
+              </div>
+            )}
           </div>
           {!readOnly && <button className="btn icon ghost" onClick={() => setMenu(true)} aria-label="Exercise options">⋯</button>}
         </div>

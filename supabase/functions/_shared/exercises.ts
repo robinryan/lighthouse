@@ -152,6 +152,29 @@ export const EXERCISES: Exercise[] = [
 ];
 
 export const EXERCISE_MAP: Map<string, Exercise> = new Map(EXERCISES.map((e) => [e.id, e]));
+
+/**
+ * Rough starting estimates for accessories with no main-lift family: the exercise's 5-rep max as a
+ * share of a main lift's (per dumbbell for one-hand work). Machines and cable stacks vary a lot, so
+ * these are only a first guess for someone's very first session; after that, their own history decides.
+ */
+const ESTIMATES: Record<string, [Family, number]> = {
+  lat_pulldown: ['bench', 0.75], neutral_pulldown: ['bench', 0.75], cable_row: ['bench', 0.75], barbell_row: ['bench', 0.85],
+  db_row: ['bench', 0.35], chest_supported_row: ['bench', 0.3], face_pull: ['bench', 0.25], straight_arm_pulldown: ['bench', 0.3],
+  lateral_raise: ['ohp', 0.15], cable_lateral_raise: ['ohp', 0.12], rear_delt_fly: ['ohp', 0.12],
+  barbell_curl: ['bench', 0.4], db_curl: ['bench', 0.17], hammer_curl: ['bench', 0.19],
+  triceps_pushdown: ['bench', 0.4], rope_pushdown: ['bench', 0.35], overhead_triceps_ext: ['bench', 0.3], skull_crusher: ['bench', 0.35],
+  leg_curl: ['deadlift', 0.3], leg_extension: ['squat', 0.45], calf_raise: ['squat', 0.8],
+  bulgarian_split_squat: ['squat', 0.18], walking_lunge: ['squat', 0.2], step_up: ['squat', 0.18],
+  cable_crunch: ['deadlift', 0.25], pallof_press: ['bench', 0.15],
+};
+
+/** The main lift (and ratio) an exercise's starting weight is estimated from, if any. */
+export function estimateBasis(ex: Exercise): { family: Family; ratio: number; rough: boolean } | null {
+  if (ex.family && ex.ratio) return { family: ex.family, ratio: ex.ratio, rough: false };
+  const e = ESTIMATES[ex.id];
+  return e ? { family: e[0], ratio: e[1], rough: true } : null;
+}
 export const EXERCISE_IDS = EXERCISES.map((e) => e.id);
 
 export function getExercise(id: string): Exercise {

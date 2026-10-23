@@ -15,6 +15,7 @@
 //  - T3 uses double progression: add reps within a range, then add weight.
 
 import {
+  estimateBasis,
   type Equipment, type Exercise, type Family, type Joint,
   avoidsJoints, getExercise, hasEquipment, EXERCISE_MAP,
 } from './exercises.ts';
@@ -269,8 +270,9 @@ const TIER_START_PCT: Record<Tier, number> = { T1: 0.85, T2: 0.65, T3: 0.5 };
 export function startingWeight(ex: Exercise, tier: Tier, profile: Profile, given: FiveRMs): number | null {
   if (ex.loadType === 'time') return null;
   if (ex.loadType === 'bodyweight') return 0;
-  if (!ex.family || !ex.ratio) return null;
-  const five = estimateFiveRM(ex.family, profile, given) * ex.ratio;
+  const basis = estimateBasis(ex);
+  if (!basis) return null;
+  const five = estimateFiveRM(basis.family, profile, given) * basis.ratio;
   return roundWeight(five * TIER_START_PCT[tier], ex, profile.units);
 }
 

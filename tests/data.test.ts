@@ -685,3 +685,70 @@ test('user classes: free routing, smaller context, plan, admin report and class 
   report = await adminReport(asAdmin, admins);
   assert.equal(report.users.find((u) => u.id === J.id)!.tier, 'paid');
 });
+
+test('targets come from your recent sessions; first-time accessories get an estimate', { skip: !ADMIN_URL && 'TEST_DATABASE_URL not set' }, async () => {
+  const K = { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', email: 'k@example.com' };
+  await pool.query(`INSERT INTO auth.users (id, email, raw_user_meta_data) VALUES ($1, $2, '{"name":"K"}')`, [K.id, K.email]);
+  const asK = fakeSupabase(pool, K);
+  setDb(asK);
+  await T.completeOnboarding(profile({ name: 'K', units: 'lb' }), { squat: 225, bench: 165, deadlift: 275, ohp: 105 });
+  const legExt = async (date: string) => {
+    const id = await T.startWorkout({ date });
+    const wexId = await T.addExerciseToWorkout(id, 'leg_extension');
+    const ex = (await T.getWorkout(id)).exercises.find((e) => e.id === wexId)!;
+    return { id, ex };
+  };
+  const log = async (ex: any, sets: Array<[number | null, number]>) => {
+    const working = ex.sets.filter((s: any) => s.kind === 'working');
+    for (let i = 0; i < working.length; i++) {
+      const [w, r] = sets[i] ?? sets[sets.length - 1];
+      await T.updateSet(working[i].id, { done: true, actualReps: r, actualWeight: w });
+    }
+  };
+
+  // 1. First time ever: an estimate from the squat instead of "?", and the card says so.
+  let { id, ex } = await legExt('2026-10-01');
+  const first = ex.sets.find((s) => s.kind === 'working')!.targetWeight;
+  assert.ok(first && first > 0, `estimate ${first}`);
+  assert.match(ex.engineNote ?? '', /First time/);
+  // Ticked without typing a weight (the old "?" bug): progression is saved with no weight.
+  await log({ sets: ex.sets.map((s) => ({ ...s, targetWeight: null })) }, [[null, 12], [null, 12], [null, 11]]);
+  const working = (await T.getWorkout(id)).exercises.find((e) => e.exerciseId === 'leg_extension')!.sets.filter((s) => s.kind === 'working');
+  for (const s of working) await T.updateSet(s.id, { actualWeight: null });
+  await T.finishWorkout(id);
+  // Before this change there was no estimate, so that saved progression had no weight: recreate it.
+  await pool.query(`UPDATE lift_states SET data = jsonb_set(data, '{weight}', 'null') WHERE user_id = $1 AND exercise_id = 'leg_extension'`, [K.id]);
+
+  // 2. Next time: still a weight to start from, reps one higher than last time, and where it came from.
+  ({ id, ex } = await legExt('2026-10-04'));
+  let w = ex.sets.filter((s) => s.kind === 'working');
+  assert.ok(w[0].targetWeight && w[0].targetWeight > 0, 'no more "?"');
+  assert.deepEqual(w.map((s) => s.targetReps), [13, 13, 12]);
+  assert.match(ex.engineNote ?? '', /Based on your last session \(Oct 1: ×12, ×12, ×11\)/);
+  assert.deepEqual(ex.previous.map((p) => p.reps), [12, 12, 11]);
+  assert.equal(ex.previousDate, '2026-10-01');
+  await log(ex, [[90, 13], [90, 13], [90, 12]]);
+  await T.finishWorkout(id);
+
+  // 3. With a logged weight, the usual progression takes over: same weight, one more rep.
+  ({ id, ex } = await legExt('2026-10-07'));
+  w = ex.sets.filter((s) => s.kind === 'working');
+  assert.deepEqual(w.map((s) => [s.targetWeight, s.targetReps]), [[90, 14], [90, 14], [90, 13]]);
+  assert.equal(ex.engineNote, null, 'normal progression needs no explanation');
+  await T.discardWorkout(id);
+
+  // 4. No saved progression at all (e.g. lost): rebuilt from the last session the same way.
+  await pool.query(`DELETE FROM lift_states WHERE user_id = $1 AND exercise_id = 'leg_extension'`, [K.id]);
+  ({ id, ex } = await legExt('2026-10-08'));
+  w = ex.sets.filter((s) => s.kind === 'working');
+  assert.deepEqual(w.map((s) => [s.targetWeight, s.targetReps]), [[90, 14], [90, 14], [90, 13]]);
+  assert.match(ex.engineNote ?? '', /Based on your last session \(Oct 4: 90×13, 90×13, 90×12\)/);
+  await T.discardWorkout(id);
+
+  // Every weighted accessory now has some starting estimate.
+  const { EXERCISES } = await import('../supabase/functions/_shared/exercises.ts');
+  const { startingWeight } = await import('../supabase/functions/_shared/engine.ts');
+  const p = profile({ units: 'lb' });
+  const missing = EXERCISES.filter((e) => e.loadType === 'weight' && e.category !== 'mobility' && startingWeight(e, 'T3', p, {}) == null).map((e) => e.id);
+  assert.deepEqual(missing, []);
+});

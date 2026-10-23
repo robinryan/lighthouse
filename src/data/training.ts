@@ -1,13 +1,13 @@
 // Training domain: connects the pure engine to Supabase. Row level security
 // scopes every query to the signed-in user.
 
-import { EXERCISE_MAP, getExercise } from '../../supabase/functions/_shared/exercises.ts';
+import { EXERCISE_MAP, type Exercise, estimateBasis, getExercise } from '../../supabase/functions/_shared/exercises.ts';
 import { EXERCISE_TIPS, videoUrl } from '../../supabase/functions/_shared/exerciseTips.ts';
 import { AUTO_ADD_THRESHOLD, STRETCH_DOSE, type StretchWhen, stretchesFor } from '../../supabase/functions/_shared/stretches.ts';
 import type { Joint } from '../../supabase/functions/_shared/exercises.ts';
 import {
   type FiveRMs, type LiftState, type PerformedSet, type Tier, type Units,
-  convertState, convertWeight, e1rm, evaluate, generateProgram, initialState, prescribe, roundWeight,
+  convertState, convertWeight, e1rm, evaluate, generateProgram, getScheme, initialState, prescribe, roundWeight,
 } from '../../supabase/functions/_shared/engine.ts';
 import {
   type DoneSetRow, type FullProfile, type SetRow, type StoredProgram, type WexRow, type WorkoutRow,
@@ -136,23 +136,62 @@ async function loadCtx(): Promise<Ctx> {
   return { profile, program, states: new Map(rows.map((r) => [`${r.exercise_id}|${r.tier}`, r.data])) };
 }
 
-async function lastWorkingWeight(exerciseId: string): Promise<number | null> {
-  const rows = must(await db().from('done_sets').select('actual_weight').eq('exercise_id', exerciseId)
-    .eq('kind', 'working').not('actual_weight', 'is', null)
-    .order('date', { ascending: false }).order('set_id', { ascending: false }).limit(1)) as Array<{ actual_weight: number }>;
-  return rows[0]?.actual_weight ?? null;
+/** Where a lift's next targets came from. */
+type StateSource = 'saved' | 'history' | 'estimate' | 'none';
+
+/** Lift state, or a fresh one. With `useHistory`, a lift with no usable saved state starts from your last session. */
+async function liftState(ctx: Ctx, exerciseId: string, tier: Tier, useHistory = false): Promise<LiftState> {
+  return (await liftStateWithSource(ctx, exerciseId, tier, useHistory)).state;
 }
 
-/** Lift state, or a fresh one. With `useHistory`, an exercise we can't estimate starts from its last logged weight. */
-async function liftState(ctx: Ctx, exerciseId: string, tier: Tier, useHistory = false): Promise<LiftState> {
+async function liftStateWithSource(ctx: Ctx, exerciseId: string, tier: Tier, useHistory: boolean): Promise<{ state: LiftState; source: StateSource; last?: string }> {
   const key = `${exerciseId}|${tier}`;
+  const ex = getExercise(exerciseId);
   const known = ctx.states.get(key);
-  if (known) return known;
-  const s = initialState(getExercise(exerciseId), tier, ctx.profile, ctx.program?.fiveRMs ?? {});
-  if (!useHistory) return s;
-  if (s.weight == null) s.weight = await lastWorkingWeight(exerciseId);
+  // A saved state is used as is, unless it never got a weight (sets ticked without one).
+  if (known && (!useHistory || ex.loadType !== 'weight' || known.weight != null)) return { state: known, source: 'saved' };
+  const fresh = () => initialState(ex, tier, ctx.profile, ctx.program?.fiveRMs ?? {});
+  if (!useHistory) return { state: fresh(), source: 'estimate' };
+  const derived = await stateFromHistory(ctx, ex, tier, known);
+  if (derived) {
+    ctx.states.set(key, derived.state);
+    return { state: derived.state, source: 'history', last: derived.last };
+  }
+  const s = known ? { ...known } : fresh();
+  if (s.weight == null && ex.loadType === 'weight') s.weight = fresh().weight;
   ctx.states.set(key, s);
-  return s;
+  return { state: s, source: s.weight != null || ex.loadType !== 'weight' ? 'estimate' : 'none' };
+}
+
+/**
+ * Next targets rebuilt from the most recent finished session that included this exercise (same tier
+ * if possible), by running the usual progression rules on what was logged. Used when there's no
+ * saved progression for it, e.g. an exercise added by hand, or one first done without a weight.
+ */
+async function stateFromHistory(ctx: Ctx, ex: Exercise, tier: Tier, known?: LiftState): Promise<{ state: LiftState; last: string } | null> {
+  const rows = must(await db().from('done_sets').select('workout_id, date, tier, actual_weight, actual_reps, position')
+    .eq('exercise_id', ex.id).eq('kind', 'working')
+    .order('date', { ascending: false }).order('workout_id', { ascending: false }).order('position').limit(60)) as
+    Array<{ workout_id: number; date: string; tier: Tier; actual_weight: number | null; actual_reps: number | null }>;
+  const done = rows.filter((r) => (r.actual_reps ?? 0) > 0);
+  if (!done.length) return null;
+  const pool = done.some((r) => r.tier === tier) ? done.filter((r) => r.tier === tier) : done;
+  const last = pool.filter((r) => r.workout_id === pool[0].workout_id);
+  const weights = last.map((r) => r.actual_weight).filter((w): w is number => w != null && w > 0);
+  const start: LiftState = known ? { ...known } : initialState(ex, tier, ctx.profile, ctx.program?.fiveRMs ?? {});
+  if (weights.length) start.weight = Math.min(...weights);
+  // Logged without a weight: fall back to the estimate rather than leave it blank.
+  if (start.weight == null && ex.loadType === 'weight') start.weight = initialState(ex, tier, ctx.profile, ctx.program?.fiveRMs ?? {}).weight;
+  const scheme = getScheme(ctx.profile.goal, tier, start.stage, ex);
+  const performed: PerformedSet[] = last.map((r) => ({
+    kind: 'working', targetReps: scheme.reps, targetWeight: start.weight,
+    actualReps: r.actual_reps, actualWeight: r.actual_weight, done: true, skipped: false,
+  }));
+  const ev = evaluate(start, ex, performed, ctx.profile.goal, ctx.profile.units, ctx.profile.experience, last[0].date);
+  if (ev.outcome === 'none') return null;
+  const fmtSet = (r: typeof last[number]) => (ex.loadType === 'weight' && r.actual_weight ? `${r.actual_weight}×${r.actual_reps}` : `×${r.actual_reps}`);
+  const day = new Date(`${last[0].date}T12:00:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return { state: ev.state, last: `${day}: ${last.map(fmtSet).join(', ')}` };
 }
 
 // ---------------------------------------------------------------------------
@@ -272,10 +311,17 @@ async function insertExercise(
   slotId: string | null, date: string, substitutedFrom: string | null = null,
 ): Promise<number> {
   const ex = getExercise(exerciseId);
-  const p = prescribe(await liftState(ctx, exerciseId, tier, true), ex, ctx.profile.goal, ctx.profile.units, date);
+  const { state, source, last } = await liftStateWithSource(ctx, exerciseId, tier, true);
+  const p = prescribe(state, ex, ctx.profile.goal, ctx.profile.units, date);
+  // Say where the targets came from when it isn't the usual saved progression.
+  const origin = source === 'history' && last ? `Based on your last session (${last}).`
+    : source === 'estimate' && ex.loadType === 'weight' && estimateBasis(ex)?.rough
+      ? 'First time: this weight is an estimate from your main lifts. Adjust it so the last reps are hard but clean.'
+      : null;
+  const note = [origin, p.note].filter(Boolean).join(' ') || null;
   const row = must(await db().from('workout_exercises').insert({
     workout_id: workoutId, exercise_id: exerciseId, position, tier, slot_id: slotId, scheme_label: p.scheme.label,
-    rest_seconds: p.scheme.rest, engine_note: p.note, substituted_from: substitutedFrom,
+    rest_seconds: p.scheme.rest, engine_note: note, substituted_from: substitutedFrom,
   }).select('id').single()) as { id: number };
   must(await db().from('sets').insert(p.sets.map((s, i) => ({
     workout_exercise_id: row.id, position: i, kind: s.kind, target_reps: s.targetReps, target_weight: s.targetWeight, amrap: s.amrap,
@@ -350,6 +396,7 @@ export async function getWorkout(id: number): Promise<Workout> {
         substitutedFrom: we.substituted_from, loadType: ex?.loadType ?? 'weight', perHand: !!ex?.perHand,
         equipment: ex?.equipment ?? [], cues: ex?.cues ?? '', muscles: ex?.muscles ?? [],
         previous: mine.filter((h) => h.workout_id === lastWorkout).map((h) => ({ reps: h.actual_reps, weight: h.actual_weight })),
+        previousDate: mine[0]?.date ?? null,
         bestE1rm: mine.reduce((m, h) => Math.max(m, e1rm(h.actual_weight ?? 0, h.actual_reps ?? 0)), 0),
         sets: we.sets.map(toDTOSet),
         tips: EXERCISE_TIPS[we.exercise_id] ?? [],

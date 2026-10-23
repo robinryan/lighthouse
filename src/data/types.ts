@@ -38,7 +38,7 @@ export interface WorkoutExercise {
   id: number; exerciseId: string; name: string; tier: Tier; slotId: string | null; schemeLabel: string;
   restSeconds: number; notes: string; engineNote: string | null; substitutedFrom: string | null; loadType: LoadType;
   perHand: boolean; equipment: Equipment[]; cues: string; muscles: string[];
-  previous: Array<{ reps: number | null; weight: number | null }>; bestE1rm: number; sets: SetDTO[];
+  previous: Array<{ reps: number | null; weight: number | null }>; previousDate: string | null; bestE1rm: number; sets: SetDTO[];
   tips: string[]; videoUrl: string; skipped: boolean; skipReason: string | null;
   /** Set when this row is a stretch: which exercise it's for, before or after it, and why. */
   stretch: { forExerciseId: string; forName: string; when: 'before' | 'after'; importance: number | null; why: string | null; dose: string | null } | null;
