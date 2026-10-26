@@ -8,7 +8,7 @@ import { type SetPatch, updateSet } from './data/training';
 export * from './data/types';
 export * from './data/training';
 export * from './data/stats';
-export { listMessages, askCoach, getMyPlan, getAdminReport, setUserTier, readIntake, explainPlan, latestPlanExplanation, applyAction, applySessionActions, undoAction, makeSwapPermanent, coachUsageThisMonth, CoachNotConfiguredError, type CoachMonthUsage } from './data/coach';
+export { listMessages, askCoach, waitForReply, CoachConnectionError, appliesAutomatically, getMyPlan, getAdminReport, setUserTier, readIntake, explainPlan, latestPlanExplanation, applyAction, applySessionActions, undoAction, makeSwapPermanent, coachUsageThisMonth, CoachNotConfiguredError, type CoachMonthUsage } from './data/coach';
 export { db, isConfigured, siteUrl, takeAuthLinkError } from './data/client';
 export { NetworkError };
 

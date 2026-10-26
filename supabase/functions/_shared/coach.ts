@@ -88,12 +88,13 @@ Your job:
 - When something hurts: ask at most one clarifying question only if truly needed; otherwise suggest pain-free alternatives from the catalog, load reductions, and relevant mobility or rehab work. Use the propose_* tools so your suggestions take effect (see below). Prefer keeping the movement pattern and training effect while removing the painful position (e.g. neutral grip, reduced range, machine or dumbbell versions).
 - Safety: you are not a medical professional. If the user describes sharp or sudden pain, a pop, swelling, numbness or tingling, pain that persists at rest or at night, or chest pain/dizziness, tell them to stop the exercise and see a doctor or physiotherapist. Never encourage training through sharp pain. Mild, familiar discomfort that stays at or below about 3/10 and settles within 24 hours is generally acceptable to train around.
 - Only recommend exercises by catalog id via the tools; you may mention others in text but tools must use catalog ids.
-- Changes to today's workout (propose_swap, propose_load_change, propose_add_exercise) are applied to the current session immediately, and the user can undo them. Changes to future sessions (propose_program_change, propose_limitations, and propose_swap with scope "program") wait for the user to approve.
-- Use propose_program_change only when a change should stick across future sessions (e.g. a recurring problem). Use propose_swap with scope "today" for one-off issues.
+- Changes to today's workout (propose_swap, propose_load_change, propose_add_exercise) are applied to the current session immediately, and the user can undo them.
+- You can change the program (future sessions) too: propose_program_change (replace a slot's exercise), propose_program_add, propose_program_remove. When the user clearly asks for a lasting change ("add these to my program", "swap it permanently"), set apply_now: true: it's saved straight away (they can undo). For your own suggestions set apply_now: false so they approve it. Same for propose_swap with scope "program". To add something today and from now on, use propose_program_add plus propose_add_exercise.
+- Use program changes only for things that should stick; propose_swap with scope "today" for one-off issues.
 - Use propose_limitations when the user reveals an ongoing joint issue so future programs avoid aggravating it.
 - Health profile: whenever the user tells you something lasting about their body or preferences (a sore or injured joint, an exercise that hurts, one that feels great, one they dislike, relevant history like surgery or a desk job), call record_health_note right away — it saves immediately and the user can undo it. Don't record trivia or repeat what's already in the profile. Respect the profile in every recommendation: never suggest exercises listed under "Avoid", and favour ones that are easy on sensitive joints.
 - When the user skipped an exercise or sets (shown in context with the reason), take that reason into account.
-- Weights are in the user's units. Describe today's changes as done ("I've swapped…"); describe future-session changes as suggestions for the user to approve.
+- Weights are in the user's units. Describe changes you applied (today's, or apply_now program changes) as done ("I've added…"); describe the rest as suggestions for the user to approve.
 - Make at most ${MAX_PROPOSALS} changes per reply (swaps, load changes, added exercises, program or joint changes) and at most ${MAX_HEALTH_NOTES} health notes. Pick the ones that matter most; the user can ask for more.
 - Write your whole reply in the same response as your tool calls. You won't see the results or get another turn, so don't plan to follow up.
 
@@ -110,7 +111,7 @@ export const TOOLS = [
   WEB_SEARCH,
   {
     name: 'propose_swap',
-    description: 'Propose replacing an exercise in the current workout with another catalog exercise. The user sees an Apply button.',
+    description: 'Replace an exercise in the current workout with another catalog exercise.',
     strict: true,
     input_schema: {
       type: 'object',
@@ -119,8 +120,9 @@ export const TOOLS = [
         new_exercise_id: exerciseId,
         scope: { type: 'string', enum: ['today', 'program'], description: '"today" for this session only, "program" to also change future sessions.' },
         reason: { type: 'string', description: 'One short sentence shown to the user.' },
+        apply_now: { type: 'boolean', description: 'scope "program" only.' },
       },
-      required: ['workout_exercise_id', 'new_exercise_id', 'scope', 'reason'],
+      required: ['workout_exercise_id', 'new_exercise_id', 'scope', 'reason', 'apply_now'],
       additionalProperties: false,
     },
   },
@@ -158,7 +160,7 @@ export const TOOLS = [
   },
   {
     name: 'propose_program_change',
-    description: 'Propose permanently changing which exercise fills a slot in the user\'s program (slot ids are in context).',
+    description: 'Permanently change which exercise fills a slot in the user\'s program (slot ids are in context).',
     strict: true,
     input_schema: {
       type: 'object',
@@ -166,8 +168,40 @@ export const TOOLS = [
         slot_id: { type: 'string' },
         new_exercise_id: exerciseId,
         reason: { type: 'string' },
+        apply_now: { type: 'boolean' },
       },
-      required: ['slot_id', 'new_exercise_id', 'reason'],
+      required: ['slot_id', 'new_exercise_id', 'reason', 'apply_now'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'propose_program_add',
+    description: 'Add an accessory to one or more program days, after the existing exercises.',
+    strict: true,
+    input_schema: {
+      type: 'object',
+      properties: {
+        day_keys: { type: 'array', items: { type: 'string', enum: ['A1', 'A2', 'B1', 'B2'] } },
+        exercise_id: exerciseId,
+        reason: { type: 'string' },
+        apply_now: { type: 'boolean' },
+      },
+      required: ['day_keys', 'exercise_id', 'reason', 'apply_now'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'propose_program_remove',
+    description: 'Remove an accessory (T3) slot from the program. Main lifts can only be replaced.',
+    strict: true,
+    input_schema: {
+      type: 'object',
+      properties: {
+        slot_id: { type: 'string' },
+        reason: { type: 'string' },
+        apply_now: { type: 'boolean' },
+      },
+      required: ['slot_id', 'reason', 'apply_now'],
       additionalProperties: false,
     },
   },
@@ -312,16 +346,21 @@ type ActionStatus = 'pending' | 'applied' | 'dismissed' | 'undone';
 export type ActionUndo =
   | { kind: 'swap'; workoutExerciseId: number; exerciseId: string }
   | { kind: 'load'; weights: Array<{ setId: number; weight: number | null }> }
-  | { kind: 'add'; workoutExerciseId: number };
+  | { kind: 'add'; workoutExerciseId: number }
+  | { kind: 'program'; slotId: string; exerciseId: string }
+  | { kind: 'program_add'; slotIds: string[] }
+  | { kind: 'program_remove'; dayKey: string; index: number; slot: { id: string; tier: 'T1' | 'T2' | 'T3'; exerciseId: string } };
 
 /** Actions that change only the workout in progress, so the app applies them straight away. */
 export const SESSION_ACTIONS = ['swap', 'load', 'add'] as const;
 export type CoachAction =
   | { type: 'swap'; workoutExerciseId: number; exerciseId: string; scope: 'today' | 'program'; reason: string; label: string; status: ActionStatus;
-      undo?: ActionUndo; /** scope "program": the user also made it permanent */ permanent?: boolean }
+      undo?: ActionUndo; /** scope "program": the user also made it permanent */ permanent?: boolean; /** the user asked for it to stick */ applyNow?: boolean }
   | { type: 'load'; workoutExerciseId: number; percent: number; reason: string; label: string; status: ActionStatus; undo?: ActionUndo }
   | { type: 'add'; workoutId: number; exerciseId: string; sets: number; reps: number; restSeconds: number; note: string; label: string; status: ActionStatus; undo?: ActionUndo }
-  | { type: 'program'; slotId: string; exerciseId: string; reason: string; label: string; status: ActionStatus }
+  | { type: 'program'; slotId: string; exerciseId: string; reason: string; label: string; status: ActionStatus; applyNow?: boolean; undo?: ActionUndo }
+  | { type: 'program_add'; dayKeys: string[]; exerciseId: string; reason: string; label: string; status: ActionStatus; applyNow?: boolean; undo?: ActionUndo }
+  | { type: 'program_remove'; slotId: string; reason: string; label: string; status: ActionStatus; applyNow?: boolean; undo?: ActionUndo }
   | { type: 'limitations'; add: Joint[]; remove: Joint[]; note: string; label: string; status: ActionStatus }
   /** Already saved when created; "dismissing" it undoes the save. */
   | { type: 'health'; noteId: number; label: string; note: string; status: ActionStatus };
@@ -343,7 +382,7 @@ export async function toAction(db: Db, workout: LoadedWorkout | null, name: stri
       const we = needWex(num('workout_exercise_id'));
       const to = needExercise(str('new_exercise_id'));
       const scope = str('scope') === 'program' ? 'program' : 'today';
-      return { type: 'swap', workoutExerciseId: we.id, exerciseId: to, scope, reason: str('reason'), status: 'pending',
+      return { type: 'swap', workoutExerciseId: we.id, exerciseId: to, scope, reason: str('reason'), status: 'pending', applyNow: scope === 'program' && input.apply_now === true,
         label: `Swap ${we.name} → ${exName(to)}${scope === 'program' ? ' (keep in program)' : ' (today)'}` };
     }
     case 'propose_load_change': {
@@ -366,8 +405,29 @@ export async function toAction(db: Db, workout: LoadedWorkout | null, name: stri
       const slot = sp?.program.days.flatMap((d) => d.slots).find((s) => s.id === str('slot_id'));
       if (!slot) throw new Error(`Unknown slot_id ${str('slot_id')}`);
       const to = needExercise(str('new_exercise_id'));
-      return { type: 'program', slotId: slot.id, exerciseId: to, reason: str('reason'), status: 'pending',
+      return { type: 'program', slotId: slot.id, exerciseId: to, reason: str('reason'), status: 'pending', applyNow: input.apply_now === true,
         label: `Program: ${exName(slot.exerciseId)} → ${exName(to)}` };
+    }
+    case 'propose_program_add': {
+      const sp = await loadProgram(db);
+      if (!sp) throw new Error('No program yet');
+      const to = needExercise(str('exercise_id'));
+      const keys = [...new Set((Array.isArray(input.day_keys) ? input.day_keys : []).map(String))];
+      const days = sp.program.days.filter((d) => keys.includes(d.key));
+      if (!days.length) throw new Error(`Unknown day_keys ${keys.join(', ')}; use ${sp.program.days.map((d) => d.key).join(', ')}`);
+      const fresh = days.filter((d) => !d.slots.some((x) => x.exerciseId === to)).map((d) => d.key);
+      if (!fresh.length) throw new Error(`${exName(to)} is already on those days`);
+      return { type: 'program_add', dayKeys: fresh, exerciseId: to, reason: str('reason'), status: 'pending', applyNow: input.apply_now === true,
+        label: `Program: add ${exName(to)} to ${fresh.length === sp.program.days.length ? 'every day' : fresh.join(', ')}` };
+    }
+    case 'propose_program_remove': {
+      const sp = await loadProgram(db);
+      const day = sp?.program.days.find((d) => d.slots.some((x) => x.id === str('slot_id')));
+      const slot = day?.slots.find((x) => x.id === str('slot_id'));
+      if (!day || !slot) throw new Error(`Unknown slot_id ${str('slot_id')}`);
+      if (slot.tier !== 'T3') throw new Error('Main lifts can be replaced (propose_program_change) but not removed');
+      return { type: 'program_remove', slotId: slot.id, reason: str('reason'), status: 'pending', applyNow: input.apply_now === true,
+        label: `Program: remove ${exName(slot.exerciseId)} from ${day.key}` };
     }
     case 'propose_limitations': {
       const valid = (v: unknown) => (Array.isArray(v) ? v.filter((j): j is Joint => JOINTS.includes(j as Joint)) : []);
@@ -626,7 +686,9 @@ export async function runCoach(opts: {
           ? 'Saved to the health profile (the user can undo).'
           : (SESSION_ACTIONS as readonly string[]).includes(action.type)
             ? `Applied to today's workout: "${action.label}". The user can undo it.`
-            : `Shown to the user as a button: "${action.label}". Not applied until they approve.` });
+            : 'applyNow' in action && action.applyNow
+              ? `Saved to the program: "${action.label}". The user can undo it.`
+              : `Shown to the user as a button: "${action.label}". Not applied until they approve.` });
       } catch (err) {
         results.push({ type: 'tool_result', tool_use_id: block.id, is_error: true, content: (err as Error).message });
         fixable = true;

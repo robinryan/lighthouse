@@ -95,7 +95,9 @@ If you ever want direct control over the database (SQL editor, backups, monitori
 **AI coach (Claude)**
 - Lives in every workout and has its own tab. It sees your profile, program, today's workout and recent sessions, and can search the web, citing its sources.
 - Changes to the workout you're doing (swapping an exercise, lightening the remaining sets, adding stretches or rehab drills) are applied straight away, each with an **Undo**. If the coach thinks a swap should stick, you can also tap **Keep for future sessions**.
-- Changes to future sessions (a program slot, a joint to protect) wait for you to tap **Apply**.
+- **Program changes you ask for are saved straight away.** Say "add calf raises to my program", "swap bench for dumbbell press permanently" or "drop leg curls", and the coach changes your program: it can replace an exercise, add an accessory to one or more days, or remove an accessory. Main lifts can be replaced but not removed. Each change has an **Undo**. Changes the coach suggests on its own (a program slot, a joint to protect) wait for you to tap **Apply**.
+- **Keeps working if you switch apps.** If you leave the app or the chat while the coach is answering, it finishes on the server. When you come back, the chat picks up the saved answer and applies its changes. Nothing needs to be re-sent.
+- Rebuilding the program (Settings → Save & rebuild) starts from a fresh program, so accessories the coach added are dropped.
 - The message box sits at the top of the chat; the newest question and answer appear right under it.
 - It isn't medical advice. It tells you to stop and see a professional for sharp pain, swelling or numbness.
 - Each question goes to the cheapest Claude model that answers it well (see **Plans** below), with server-side refusal fallbacks on Sonnet and Opus.

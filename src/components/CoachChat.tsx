@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { applyAction, applySessionActions, askCoach, CoachNotConfiguredError, listMessages, makeSwapPermanent, undoAction, type CoachMessage } from '../api';
+import {
+  applyAction, applySessionActions, appliesAutomatically, askCoach, CoachConnectionError, CoachNotConfiguredError, listMessages, makeSwapPermanent,
+  undoAction, waitForReply, type CoachMessage,
+} from '../api';
 import type { CoachAction } from '../data/types';
 import { refreshPlan, useAsync, useOnline, usePlan } from '../hooks';
 
@@ -28,7 +31,23 @@ export function Markdown({ text }: { text: string }) {
   return <div className="md">{blocks}</div>;
 }
 
-const SESSION_TYPES = ['swap', 'load', 'add'];
+const PROGRAM_TYPES = ['program', 'program_add', 'program_remove'];
+// deno-lint-ignore no-explicit-any
+const autoApplies = (m: CoachMessage) => m.actions.some((a) => appliesAutomatically(a as any));
+
+/** A question still being answered, remembered across leaving the screen or the app. */
+interface Pending { workoutId: number | null; text: string; sinceId: number; at: number }
+const PENDING_KEY = 'lh_coach_pending';
+const PENDING_MAX_MS = 5 * 60_000;
+function readPending(workoutId: number | null): Pending | null {
+  try {
+    const p = JSON.parse(localStorage.getItem(PENDING_KEY) ?? 'null') as Pending | null;
+    return p && p.workoutId === workoutId && Date.now() - p.at < PENDING_MAX_MS ? p : null;
+  } catch { return null; }
+}
+function writePending(p: Pending | null) {
+  try { if (p) localStorage.setItem(PENDING_KEY, JSON.stringify(p)); else localStorage.removeItem(PENDING_KEY); } catch { /* ignore */ }
+}
 const MODEL_NAMES: Record<string, string> = { 'claude-haiku-5-5': 'Haiku', 'claude-sonnet-5-5': 'Sonnet', 'claude-opus-5-5': 'Opus' };
 
 /** Group the conversation into exchanges (a question and the coach's reply), newest first. */
@@ -56,8 +75,55 @@ export function CoachChat({ workoutId, suggestions, onApplied, initialPrompt }: 
   const topRef = useRef<HTMLDivElement>(null);
   const online = useOnline();
 
+  const [waiting, setWaiting] = useState(false);
+  const resumed = useRef(false);
+
   // Newest exchange is at the top: keep it in view when one is added.
   useEffect(() => { topRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }, [data?.messages.length]);
+
+  /** Apply what the coach changed (today's workout, and program changes the user asked for). */
+  async function applyReply(reply: CoachMessage) {
+    if (!autoApplies(reply)) return;
+    try {
+      if (await applySessionActions(reply.id)) onApplied?.();
+    } catch (e) {
+      setError(`Couldn't apply the coach's changes: ${(e as Error).message}`);
+    }
+  }
+
+  /** The request didn't come back (app in the background, network blip): wait for the saved reply. */
+  async function awaitSavedReply(p: Pending) {
+    setSending(true);
+    setWaiting(true);
+    try {
+      const reply = await waitForReply(p.workoutId, p.sinceId, p.text);
+      if (reply) {
+        await applyReply(reply);
+        refreshPlan();
+      } else {
+        setError('The coach didn\'t answer that one. Please try again.');
+        setText(p.text);
+      }
+      await reload();
+    } finally {
+      writePending(null);
+      setWaiting(false);
+      setSending(false);
+    }
+  }
+
+  // Coming back to the chat while a question was still being answered: pick up where it left off.
+  // Also apply any changes from a recent reply that arrived while the app was closed.
+  useEffect(() => {
+    if (!data || resumed.current) return;
+    resumed.current = true;
+    const p = readPending(workoutId);
+    if (p && !sending) { void awaitSavedReply(p); return; }
+    const last = [...data.messages].reverse().find((m) => m.role === 'assistant');
+    if (last && autoApplies(last) && Date.now() - Date.parse(last.createdAt) < 15 * 60_000) {
+      void applyReply(last).then(() => reload());
+    }
+  }, [data]);
 
   async function send(msg: string) {
     const body = msg.trim();
@@ -65,27 +131,31 @@ export function CoachChat({ workoutId, suggestions, onApplied, initialPrompt }: 
     setSending(true);
     setError(null);
     setText('');
+    const sinceId = data.messages.reduce((m, x) => Math.max(m, x.id), 0);
+    const pending: Pending = { workoutId, text: body, sinceId, at: Date.now() };
+    writePending(pending);
     const optimistic: CoachMessage = { id: -Date.now(), role: 'user', content: body, createdAt: '', actions: [], sources: [], costUsd: null, effort: null, webSearches: 0 };
     setData({ ...data, messages: [...data.messages, optimistic] });
     try {
       const reply = await askCoach(workoutId, body, research && canResearch);
+      writePending(null);
       refreshPlan();
       setResearch(false);
-      // Changes to today's workout take effect right away (each can be undone).
-      if (reply.actions.some((a) => a.status === 'pending' && SESSION_TYPES.includes(a.type))) {
-        try {
-          if (await applySessionActions(reply.id)) onApplied?.();
-        } catch (e) {
-          setError(`Couldn't apply the coach's changes: ${(e as Error).message}`);
-        }
-      }
+      await applyReply(reply);
       await reload();
+      setSending(false);
     } catch (e) {
+      if (e instanceof CoachConnectionError) {
+        // Keep the question on screen; the coach keeps working and saves its answer.
+        setResearch(false);
+        await awaitSavedReply(pending);
+        return;
+      }
+      writePending(null);
       if (e instanceof CoachNotConfiguredError) setNotConfigured(e.message);
       else setError((e as Error).message);
       setText(body);
       setData((d) => d && { ...d, messages: d.messages.filter((m) => m.id !== optimistic.id) });
-    } finally {
       setSending(false);
     }
   }
@@ -123,7 +193,7 @@ export function CoachChat({ workoutId, suggestions, onApplied, initialPrompt }: 
     if (a.status === 'applied' && a.undo) {
       return (
         <>
-          <span className="small muted">✓ {a.type === 'swap' && a.permanent ? 'Applied — today and future sessions' : 'Applied to today\'s workout'}</span>
+          <span className="small muted">✓ {PROGRAM_TYPES.includes(a.type) ? 'Saved to your program' : a.type === 'swap' && a.permanent ? 'Applied — today and future sessions' : 'Applied to today\'s workout'}</span>
           {a.type === 'swap' && a.scope === 'program' && !a.permanent && (
             <button className="btn sm" onClick={() => act(m, i, () => makeSwapPermanent(m.id, i), false)}>Keep for future sessions</button>
           )}

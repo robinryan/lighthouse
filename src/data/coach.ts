@@ -4,7 +4,7 @@ import type { AdminReport, MyPlan } from '../../supabase/functions/_shared/tiers
 import { must } from '../../supabase/functions/_shared/queries.ts';
 import { db } from './client';
 import {
-  addExerciseToWorkout, adjustLoad, getProfile, removeWorkoutExercise, restoreTargets, saveProfile, setSlotExercise, swapExercise,
+  addExerciseToWorkout, adjustLoad, getProfile, getProgram, removeWorkoutExercise, restoreTargets, saveProfile, saveProgram, setSlotExercise, swapExercise,
 } from './training';
 import type { CoachMessage } from './types';
 
@@ -25,21 +25,39 @@ export async function listMessages(workoutId: number | null): Promise<CoachMessa
 /** Thrown when the coach edge function isn't deployed or has no API key yet. */
 export class CoachNotConfiguredError extends Error {}
 
+/**
+ * The request didn't come back (the app was in the background, the network dropped, or the
+ * gateway timed out). The coach may still have answered: its reply is saved on the server.
+ */
+export class CoachConnectionError extends Error {}
+
 /** Call the coach edge function, turning its errors into readable ones. */
 async function invokeCoach<T>(body: Record<string, unknown>): Promise<T> {
-  const { data, error } = await db().functions.invoke('coach', { body });
+  let res: { data: unknown; error: unknown };
+  try {
+    res = await db().functions.invoke('coach', { body });
+  } catch (e) {
+    throw new CoachConnectionError((e as Error).message || 'Connection lost');
+  }
+  const { data } = res;
+  const error = res.error as (Error & { context?: Response }) | null;
   if (error) {
     // supabase-js wraps non-2xx responses; pull out the function's own message when there is one.
-    const ctx = (error as { context?: Response }).context;
+    // A network failure (FunctionsFetchError) carries the fetch error as its context, not a Response.
+    const ctx = error.context instanceof Response ? error.context : undefined;
     let message = error.message as string;
     let code: string | undefined;
-    if (ctx && typeof ctx.json === 'function') {
+    let fromFunction = false;
+    if (ctx) {
       try {
         const b = await ctx.json();
+        fromFunction = typeof b?.error === 'string';
         message = b.error ?? message;
         code = b.code;
       } catch { /* not JSON */ }
     }
+    // No answer from the coach itself: a dropped connection or a gateway timeout, not a refusal.
+    if (!fromFunction && (!ctx || ctx.status >= 500 || ctx.status === 0)) throw new CoachConnectionError(message);
     if (code === 'not_configured' || (ctx && ctx.status === 404)) {
       throw new CoachNotConfiguredError(
         ctx?.status === 404
@@ -54,6 +72,30 @@ async function invokeCoach<T>(body: Record<string, unknown>): Promise<T> {
 
 export async function askCoach(workoutId: number | null, text: string, research = false): Promise<CoachMessage> {
   return toMessage(await invokeCoach<MessageRow>({ workoutId, text, research }));
+}
+
+/**
+ * After a dropped connection: wait for the coach's saved reply to `text`, sent after message
+ * `sinceId`. Checks every few seconds (and straight away when the app comes back to the
+ * foreground) for up to `timeoutMs`. Returns null if no reply turns up.
+ */
+export async function waitForReply(workoutId: number | null, sinceId: number, text: string, timeoutMs = 180_000): Promise<CoachMessage | null> {
+  const until = Date.now() + timeoutMs;
+  while (Date.now() < until) {
+    try {
+      const msgs = await listMessages(workoutId);
+      const asked = msgs.find((m) => m.id > sinceId && m.role === 'user' && m.content.trim() === text.trim());
+      const reply = asked && msgs.find((m) => m.id > asked.id && m.role === 'assistant');
+      if (reply) return reply;
+    } catch { /* still offline: keep waiting */ }
+    await new Promise<void>((resolve) => {
+      const done = () => { clearTimeout(t); document.removeEventListener('visibilitychange', onVisible); resolve(); };
+      const onVisible = () => { if (document.visibilityState === 'visible') done(); };
+      const t = setTimeout(done, 3000);
+      document.addEventListener('visibilitychange', onVisible);
+    });
+  }
+  return null;
 }
 
 /** The signed-in user's class and how much of this month's coach allowance they've used. */
@@ -89,6 +131,63 @@ async function loadActions(messageId: number): Promise<CoachAction[]> {
 const saveActions = async (messageId: number, actions: CoachAction[]) =>
   must(await db().from('coach_messages').update({ actions }).eq('id', messageId));
 
+/** Carry out a change to the program (future sessions) and remember how to undo it. */
+async function runProgramAction(a: CoachAction) {
+  const sp = await getProgram();
+  if (!sp) throw new Error('No program yet');
+  switch (a.type) {
+    case 'program': {
+      const slot = sp.program.days.flatMap((d) => d.slots).find((x) => x.id === a.slotId);
+      if (!slot) throw new Error('That program slot no longer exists');
+      a.undo = { kind: 'program', slotId: slot.id, exerciseId: slot.exerciseId };
+      slot.exerciseId = a.exerciseId;
+      break;
+    }
+    case 'program_add': {
+      const stamp = Date.now().toString(36);
+      const ids: string[] = [];
+      sp.program.days.forEach((d) => {
+        if (!a.dayKeys.includes(d.key) || d.slots.some((x) => x.exerciseId === a.exerciseId)) return;
+        const id = `${d.key}-x${stamp}${ids.length}`;
+        d.slots.push({ id, tier: 'T3', exerciseId: a.exerciseId });
+        ids.push(id);
+      });
+      if (!ids.length) throw new Error('Already in your program');
+      a.undo = { kind: 'program_add', slotIds: ids };
+      break;
+    }
+    case 'program_remove': {
+      const day = sp.program.days.find((d) => d.slots.some((x) => x.id === a.slotId));
+      if (!day) throw new Error('That program slot no longer exists');
+      const index = day.slots.findIndex((x) => x.id === a.slotId);
+      const [slot] = day.slots.splice(index, 1);
+      a.undo = { kind: 'program_remove', dayKey: day.key, index, slot };
+      break;
+    }
+    default:
+      throw new Error('Not a program change');
+  }
+  await saveProgram(sp);
+  a.status = 'applied';
+}
+
+const isProgramAction = (a: CoachAction) => a.type === 'program' || a.type === 'program_add' || a.type === 'program_remove';
+
+async function undoProgram(u: NonNullable<Extract<CoachAction, { type: 'program' }>['undo']>) {
+  const sp = await getProgram();
+  if (!sp) throw new Error('No program yet');
+  if (u.kind === 'program') {
+    const slot = sp.program.days.flatMap((d) => d.slots).find((x) => x.id === u.slotId);
+    if (slot) slot.exerciseId = u.exerciseId;
+  } else if (u.kind === 'program_add') {
+    for (const d of sp.program.days) d.slots = d.slots.filter((x) => !u.slotIds.includes(x.id));
+  } else if (u.kind === 'program_remove') {
+    const day = sp.program.days.find((d) => d.key === u.dayKey);
+    if (day && !day.slots.some((x) => x.id === u.slot.id)) day.slots.splice(Math.min(u.index, day.slots.length), 0, u.slot);
+  }
+  await saveProgram(sp);
+}
+
 /**
  * Carry out a change to today's workout and remember how to undo it.
  * `todayOnly` keeps a "program" swap to this session until the user says otherwise.
@@ -118,17 +217,22 @@ async function runSessionAction(a: CoachAction, todayOnly: boolean) {
 
 const isSessionAction = (a: CoachAction) => (SESSION_ACTIONS as readonly string[]).includes(a.type);
 
+/** Whether the app applies this change by itself: today's workout always; the program when the user asked. */
+export const appliesAutomatically = (a: CoachAction) => a.status === 'pending' && (isSessionAction(a) || (isProgramAction(a) && 'applyNow' in a && !!a.applyNow));
+
 /**
- * Apply a coach reply's changes to the workout in progress straight away (swaps, load changes,
- * added exercises). Future-session changes stay as buttons. Returns how many were applied.
+ * Apply a coach reply's changes straight away: changes to the workout in progress (swaps, load
+ * changes, added exercises), and program changes the user asked for. Suggestions stay as buttons.
+ * Returns how many were applied.
  */
 export async function applySessionActions(messageId: number): Promise<number> {
   const actions = await loadActions(messageId);
   let applied = 0;
   for (const a of actions) {
-    if (a.status !== 'pending' || !isSessionAction(a)) continue;
+    if (!appliesAutomatically(a)) continue;
     try {
-      await runSessionAction(a, true);
+      if (isSessionAction(a)) await runSessionAction(a, !(a.type === 'swap' && a.applyNow));
+      else await runProgramAction(a);
       applied++;
     } catch {
       // e.g. the exercise was already changed or the workout finished: leave it as a manual button.
@@ -138,13 +242,15 @@ export async function applySessionActions(messageId: number): Promise<number> {
   return applied;
 }
 
-/** Undo an applied change to today's workout. */
+/** Undo an applied change to today's workout or the program. */
 export async function undoAction(messageId: number, index: number): Promise<CoachAction> {
   const actions = await loadActions(messageId);
   const a = actions[index];
-  if (!a || !isSessionAction(a) || a.status !== 'applied' || !('undo' in a) || !a.undo) throw new Error('Nothing to undo');
+  if (!a || !(isSessionAction(a) || isProgramAction(a)) || a.status !== 'applied' || !('undo' in a) || !a.undo) throw new Error('Nothing to undo');
   const u = a.undo;
-  if (u.kind === 'swap') {
+  if (u.kind === 'program' || u.kind === 'program_add' || u.kind === 'program_remove') {
+    await undoProgram(u);
+  } else if (u.kind === 'swap') {
     // Look up the program slot before the swap-back replaces this row.
     const slot = a.type === 'swap' && a.permanent ? await getProgramSlotFor(u.workoutExerciseId) : null;
     await swapExercise(u.workoutExerciseId, u.exerciseId, 'today');
@@ -152,7 +258,7 @@ export async function undoAction(messageId: number, index: number): Promise<Coac
     if (a.type === 'swap') a.permanent = false;
   } else if (u.kind === 'load') {
     await restoreTargets(u.weights);
-  } else {
+  } else if (u.kind === 'add') {
     await removeWorkoutExercise(u.workoutExerciseId);
   }
   a.status = 'undone';
@@ -196,9 +302,10 @@ export async function applyAction(messageId: number, index: number, dismiss: boo
     a.status = 'dismissed';
   } else if (isSessionAction(a)) {
     await runSessionAction(a, false);
+  } else if (isProgramAction(a)) {
+    await runProgramAction(a);
   } else {
     switch (a.type) {
-      case 'program': await setSlotExercise(a.slotId, a.exerciseId); break;
       case 'limitations': {
         const p = await getProfile();
         const set = new Set(p.limitations);

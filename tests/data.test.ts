@@ -386,9 +386,9 @@ test('coach cost controls: caching, trimmed prompt, effort, search limits, usage
   assert.ok(search.allowed_domains.includes('pubmed.ncbi.nlm.nih.gov'));
   assert.ok(!JSON.stringify(req.tools).includes('"enum":["squat"'), 'no exercise-id enums');
   assert.ok(!/\nsquat\|/.test(req.system[0].text) && /\ngoblet_squat\|/.test(req.system[0].text), 'catalog filtered to equipment');
-  // Prompt got smaller: full-catalog system + tools well under the old ~6k tokens.
+  // Prompt got smaller: full-catalog system + tools well under the old ~6k tokens (program add/remove tools: ~+400).
   const approxTokens = (buildSystem(['barbell', 'dumbbell', 'cable', 'machine', 'pullup_bar', 'band']).length / 3.6) + (JSON.stringify(TOOLS).length / 3.2);
-  assert.ok(approxTokens < 4000, `prompt ≈ ${Math.round(approxTokens)} tokens`);
+  assert.ok(approxTokens < 4500, `prompt ≈ ${Math.round(approxTokens)} tokens`);
 
   // History trimmed to the last 4 messages.
   for (let i = 0; i < 6; i++) await runCoach({ db: asE, admin: asAdmin, userId: E.id, anthropic, workoutId: null, text: `question ${i}`, today: '2026-10-10', limits: { budgetUsd: 100 } });
@@ -555,6 +555,57 @@ test('coach changes to today\'s workout apply automatically and can be undone', 
   msg = (await listMessages(id)).find((m) => m.id === reply.id)!;
   assert.deepEqual(msg.actions.map((a) => a.status), ['undone', 'undone', 'undone']);
   await assert.rejects(undoAction(reply.id, 0), /Nothing to undo/);
+});
+
+test('coach saves program changes the user asks for (and only suggests its own)', { skip: !ADMIN_URL && 'TEST_DATABASE_URL not set' }, async () => {
+  const { applySessionActions, applyAction, undoAction, appliesAutomatically } = await import('../src/data/coach.ts');
+  const K = { id: '9a9a9a9a-9a9a-4a9a-8a9a-9a9a9a9a9a9a', email: 'k@example.com' };
+  await pool.query(`INSERT INTO auth.users (id, email, raw_user_meta_data) VALUES ($1, $2, '{"name":"K"}')`, [K.id, K.email]);
+  const asK = fakeSupabase(pool, K);
+  setDb(asK);
+  await T.completeOnboarding(profile({ name: 'K' }), { squat: 100, bench: 70, deadlift: 120, ohp: 45 });
+  const before = (await T.getProgram())!.program;
+  const t1 = before.days[0].slots.find((s) => s.tier === 'T1')!;
+  const t3 = before.days[1].slots.find((s) => s.tier === 'T3')!;
+  const t2 = before.days[0].slots.find((s) => s.tier === 'T2')!;
+  const extra = ['leg_curl', 'calf_raise', 'face_pull', 'hammer_curl'].find((x) => !before.days.some((d) => d.slots.some((s) => s.exerciseId === x)))!;
+
+  const script = [{ stop_reason: 'tool_use', content: [
+    { type: 'text', text: 'Done: added to your program.' },
+    { type: 'tool_use', id: 'a', name: 'propose_program_add', input: { day_keys: ['A1', 'B1'], exercise_id: extra, reason: 'Asked for it.', apply_now: true } },
+    { type: 'tool_use', id: 'b', name: 'propose_program_remove', input: { slot_id: t3.id, reason: 'Asked to drop it.', apply_now: true } },
+    { type: 'tool_use', id: 'c', name: 'propose_program_change', input: { slot_id: t2.id, new_exercise_id: 'neutral_db_press', reason: 'My idea.', apply_now: false } },
+  ] }, { stop_reason: 'tool_use', content: [
+    { type: 'text', text: 'Main lifts stay.' },
+    { type: 'tool_use', id: 'd', name: 'propose_program_remove', input: { slot_id: t1.id, reason: 'x', apply_now: true } },
+  ] }, { stop_reason: 'end_turn', content: [{ type: 'text', text: 'I can swap it instead.' }] }] as any[];
+  const requests: any[] = [];
+  const anthropic = { messages: { create: ON_TOPIC }, beta: { messages: { stream: (req: any) => { requests.push(structuredClone(req)); const m = script.shift(); return { finalMessage: async () => m }; } } } };
+  const reply = await runCoach({ db: asK, admin: asAdmin, userId: K.id, anthropic, workoutId: null, text: `Add ${extra} to my program and drop that accessory`, today: '2026-10-20' });
+  assert.match(requests[0].system[0].text, /apply_now: true/);
+  assert.deepEqual(reply.actions.map((a) => `${a.type}:${a.applyNow}`), ['program_add:true', 'program_remove:true', 'program:false']);
+  assert.deepEqual(reply.actions.map((a) => appliesAutomatically(a as any)), [true, true, false]);
+
+  // The asked-for changes are saved; the coach's own suggestion waits.
+  assert.equal(await applySessionActions(reply.id), 2);
+  let prog = (await T.getProgram())!.program;
+  assert.deepEqual(prog.days.filter((d) => d.slots.some((s) => s.exerciseId === extra)).map((d) => d.key), ['A1', 'B1']);
+  assert.ok(!prog.days[1].slots.some((s) => s.id === t3.id), 'accessory removed');
+  assert.equal(prog.days[0].slots.find((s) => s.id === t2.id)!.exerciseId, t2.exerciseId, 'suggestion not applied');
+  let msg = (await listMessages(null)).find((m) => m.id === reply.id)!;
+  assert.deepEqual(msg.actions.map((a) => a.status), ['applied', 'applied', 'pending']);
+
+  // Approving the suggestion, then undoing everything, restores the program exactly.
+  await applyAction(reply.id, 2, false);
+  assert.equal((await T.getProgram())!.program.days[0].slots.find((s) => s.id === t2.id)!.exerciseId, 'neutral_db_press');
+  for (const i of [0, 1, 2]) await undoAction(reply.id, i);
+  prog = (await T.getProgram())!.program;
+  assert.deepEqual(prog.days, before.days);
+
+  // A main lift can't be removed: the tool errors and nothing is proposed.
+  const r2 = await runCoach({ db: asK, admin: asAdmin, userId: K.id, anthropic, workoutId: null, text: 'Remove squats', today: '2026-10-20' });
+  assert.deepEqual(r2.actions, []);
+  assert.match(JSON.stringify(requests.at(-1).messages.at(-1)), /can only be replaced|not removed/);
 });
 
 test('onboarding in your own words: read, pre-fill, health profile, plan explained', { skip: !ADMIN_URL && 'TEST_DATABASE_URL not set' }, async () => {

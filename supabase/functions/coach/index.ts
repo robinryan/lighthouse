@@ -62,6 +62,17 @@ function limitsFor(tier: Tier): CoachLimits {
   };
 }
 
+/**
+ * Keep AI work running if the phone disconnects (e.g. the user switches apps mid-question): the
+ * answer is still saved, and the app picks it up when it comes back. Supabase's edge runtime
+ * provides EdgeRuntime.waitUntil; elsewhere this is a no-op.
+ */
+function keepAlive<T>(work: Promise<T>): Promise<T> {
+  // deno-lint-ignore no-explicit-any
+  (globalThis as any).EdgeRuntime?.waitUntil?.(work.catch(() => undefined));
+  return work;
+}
+
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { ...CORS, 'Content-Type': 'application/json' } });
 }
@@ -120,9 +131,9 @@ Deno.serve(async (req) => {
     }
     const anthropic = new Anthropic({ apiKey });
     const model = Deno.env.get('COACH_FORCE_MODEL') || undefined;
-    if (mode === 'intake_extract') return json(await runIntakeExtract({ db, admin, userId, anthropic, model, text, limits, tier }));
-    if (mode === 'intake_explain') return json(await runIntakeExplain({ db, admin, userId, anthropic, model, text, limits, tier }));
-    const reply = await runCoach({ db, admin, userId, anthropic, workoutId, text, limits, model, tier, research: body.research === true });
+    if (mode === 'intake_extract') return json(await keepAlive(runIntakeExtract({ db, admin, userId, anthropic, model, text, limits, tier })));
+    if (mode === 'intake_explain') return json(await keepAlive(runIntakeExplain({ db, admin, userId, anthropic, model, text, limits, tier })));
+    const reply = await keepAlive(runCoach({ db, admin, userId, anthropic, workoutId, text, limits, model, tier, research: body.research === true }));
     return json(reply);
   } catch (err) {
     if (err instanceof CoachLimitError) {
