@@ -48,6 +48,7 @@ If you ever want direct control over the database (SQL editor, backups, monitori
 - Set rows show set number, last time's numbers (tap to copy), weight, reps and a checkmark.
 - Warm-ups are calculated for the heavy lift. The last set is marked AMRAP, with optional RPE.
 - A rest timer starts when you check off a set. It has ±15 s and skip buttons, and sounds, vibrates or notifies when rest is over.
+  - The beep plays over your music or podcast instead of pausing it, and the app holds no audio between beeps, so coming back to it never stops what you were listening to. On iPhone this needs iOS 16.4 or later, and the beep follows the silent switch.
 - Plate calculator, swaps (today only or for good), live personal records, and a summary when you finish showing what changes next time.
 - Tapping any exercise name opens an **in-app demo**: an embedded video plus form tips and, for stretches, how long. Videos load only when you tap Play, to save data. If a video can't be embedded, the app offers a YouTube search instead. Three form and safety tips also sit under each lift; you can hide them in Settings.
 - **Skip an exercise or single sets**, saying why: pain (and where), equipment busy, tired, short on time, too hard or easy, dislike, or other. The app then offers replacements ranked for that reason. For example, elbow pain on bench suggests presses that don't load the elbow. Skipped sets never count as a failed session.

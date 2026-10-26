@@ -24,16 +24,44 @@ export function prefs() {
   }
 }
 
+// The rest-timer beep must never stop the user's own music or podcast. On iOS a web page's audio
+// takes over the phone's audio by default, which pauses other apps, including when you come back
+// to the app. "ambient" mixes the beep in on top instead (Safari 16.4+), and the audio context is
+// only running for the moment it beeps, so the app holds no audio while you train.
 let audioCtx: AudioContext | null = null;
+let idleTimer: ReturnType<typeof setTimeout> | undefined;
+/** Returns false on browsers without the Audio Session API (older iOS). */
+function mixWithOtherAudio(): boolean {
+  try {
+    const session = (navigator as unknown as { audioSession?: { type: string } }).audioSession;
+    if (!session) return false;
+    if (session.type !== 'ambient') session.type = 'ambient';
+    return true;
+  } catch { return false; }
+}
+mixWithOtherAudio();
+function sleepSoon(ms: number) {
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => { if (audioCtx?.state === 'running') void audioCtx.suspend().catch(() => {}); }, ms);
+}
 /** Must be called from a user gesture once so iOS allows sound later. */
 export function unlockAudio() {
+  if (!prefs().sound) return;
   try {
+    // Where audio can't be told to mix, wake it on the first tap only, so taps don't pause music.
+    if (!mixWithOtherAudio() && audioCtx) return;
     audioCtx ??= new AudioContext();
-    if (audioCtx.state === 'suspended') void audioCtx.resume();
+    if (audioCtx.state !== 'running') void audioCtx.resume().catch(() => {});
+    sleepSoon(300);
   } catch { /* no audio */ }
 }
-function beep() {
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => { if (document.hidden) sleepSoon(0); });
+}
+async function beep() {
   if (!audioCtx) return;
+  mixWithOtherAudio();
+  try { await audioCtx.resume(); } catch { return; }
   const t = audioCtx.currentTime;
   [0, 0.25, 0.5].forEach((offset, i) => {
     const o = audioCtx!.createOscillator();
@@ -46,6 +74,7 @@ function beep() {
     o.start(t + offset);
     o.stop(t + offset + 0.2);
   });
+  sleepSoon(1200);
 }
 
 async function notify(label: string) {
@@ -97,7 +126,7 @@ export function RestTimerProvider({ children }: { children: ReactNode }) {
     fired.current = true;
     const p = prefs();
     if (p.vibrate && 'vibrate' in navigator) navigator.vibrate([250, 120, 250, 120, 400]);
-    if (p.sound) beep();
+    if (p.sound) void beep();
     void notify(timer.label);
     const clear = setTimeout(() => setTimer(null), 8000);
     return () => clearTimeout(clear);
