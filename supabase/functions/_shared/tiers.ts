@@ -4,6 +4,7 @@
 
 import { type CoachLimits, type Tier, limitStats } from './coach.ts';
 import { type Db, must } from './queries.ts';
+import { VERSION } from './version.ts';
 
 export const DEFAULT_ADMIN_EMAILS = ['robin.ryan@gmail.com'];
 
@@ -29,6 +30,8 @@ export interface MyPlan {
   dailyLimit: number;
   spentUsd?: number;
   allowanceUsd?: number;
+  /** Version of the deployed coach function. */
+  coachVersion?: string;
 }
 
 export async function myPlan(admin: Db, userId: string, tier: Tier, limits: CoachLimits): Promise<MyPlan> {
@@ -36,7 +39,7 @@ export async function myPlan(admin: Db, userId: string, tier: Tier, limits: Coac
   const plan: MyPlan = {
     tier, research: tier !== 'free',
     usedPct: limits.budgetUsd > 0 ? Math.min(100, Math.round((s.user_month / limits.budgetUsd) * 100)) : null,
-    messagesToday: s.last_day, dailyLimit: limits.daily,
+    messagesToday: s.last_day, dailyLimit: limits.daily, coachVersion: VERSION,
   };
   if (tier === 'admin') { plan.spentUsd = s.user_month; plan.allowanceUsd = limits.budgetUsd; }
   return plan;
