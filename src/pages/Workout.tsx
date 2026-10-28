@@ -14,6 +14,8 @@ import { CoachChat } from '../components/CoachChat';
 import { Sheet } from '../components/Sheet';
 import { SkipSheet } from '../components/SkipSheet';
 import { ExerciseName, FormTips, tipsEnabled } from '../components/ExerciseName';
+import { VARIETY_NOTE } from '../../supabase/functions/_shared/frequency.ts';
+import { EXERCISE_MAP } from '../../supabase/functions/_shared/exercises.ts';
 
 const COACH_SUGGESTIONS = [
   'My elbow hurts today — what can I do instead?',
@@ -379,7 +381,16 @@ function ExerciseCard({ ex, units, readOnly, active, isLast, nextName, onLocalCh
           </div>
           {!readOnly && <button className="btn icon ghost" onClick={() => setMenu(true)} aria-label="Exercise options">⋯</button>}
         </div>
-        {ex.engineNote && <div className="notice" style={{ margin: '0 4px 8px' }}>{ex.engineNote}</div>}
+        {ex.engineNote && (
+          <div className="notice" style={{ margin: '0 4px 8px' }}>
+            {ex.engineNote.startsWith(VARIETY_NOTE) ? ex.engineNote.slice(VARIETY_NOTE.length).trim().replace(/^./, (c) => c.toUpperCase()) : ex.engineNote}
+            {ex.engineNote.startsWith(VARIETY_NOTE) && ex.substitutedFrom && !readOnly && !ex.sets.some((x) => x.done) && (
+              <> <button className="link-btn small" onClick={() => void doSwap(ex.substitutedFrom!, 'today')}>
+                Do {EXERCISE_MAP.get(ex.substitutedFrom)?.name ?? 'the original'} instead
+              </button></>
+            )}
+          </div>
+        )}
         {ex.notes && <div className="small" style={{ margin: '0 4px 8px' }}>📝 {ex.notes}</div>}
         {ex.stretch?.importance != null && (
         <div className="imp-row">

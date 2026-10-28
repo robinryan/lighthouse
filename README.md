@@ -43,6 +43,11 @@ If you ever want direct control over the database (SQL editor, backups, monitori
   - B2: Deadlift + OHP
 - **Automatic progression.** Weight goes up every time you hit your reps. A missed session moves the lift to the next rep stage at the same weight (5×3 → 6×2 → 10×1) before the weight ever drops. Accessories use double progression: add reps within a range, then add weight. After more than two weeks off, a lift starts 10% lighter.
 - **Personalised from your profile.** Goal, session length, equipment and the joints you want to protect decide which exercises are picked and how many accessories you get.
+- **Adapts when you train more often than planned.** Each session is adjusted when you start it, based on what you did in the last day. No AI is used.
+  - An accessory you did yesterday becomes a different exercise for the same muscles. A Lat Pulldown yesterday becomes a row today. If today already trains that muscle, it becomes an exercise for a muscle that's behind for the week instead. This also applies to exercises you or the coach added, and the card offers **Do … instead** to switch back.
+  - A muscle worked very hard yesterday (6+ hard sets) gets a day off: its accessory is replaced with one for a muscle that's behind for the week. Exercises you or the coach chose aren't changed for this.
+  - On your third training day in a row or later, a leg volume lift (squat or deadlift T2) drops one set if your legs worked hard the day before. Heavy T1 lifts never change, and weight increases still happen as normal.
+  - Today shows a notice when you've trained at least 1 day a week more than your plan says over the last 3 weeks, and offers to update it. The coach is told how often you actually train.
 
 **Logging** (modelled on Strong and Hevy)
 - Set rows show set number, last time's numbers (tap to copy), weight, reps and a checkmark.
@@ -171,6 +176,7 @@ supabase/
   functions/coach/index.ts    edge function: Claude + web search + proposal tools
   functions/_shared/          code shared by the app and the edge function
     engine.ts                 programming & progression rules (pure, unit tested)
+    frequency.ts              training frequency and session adjustments (pure, unit tested)
     exercises.ts              exercise catalog (muscles, equipment, joint stress, cues)
     coach.ts                  coach prompt, tools, context, validation
 tests/                        engine unit tests + Postgres integration tests

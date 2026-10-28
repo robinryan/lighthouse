@@ -1,3 +1,4 @@
+import type { Frequency } from '../../supabase/functions/_shared/frequency.ts';
 // Shapes the UI works with.
 
 export type Units = 'kg' | 'lb';
@@ -62,7 +63,11 @@ export interface DayPreview {
   exercises: Array<{ slotId: string; exerciseId: string; name: string; tier: Tier; scheme: string; weight: number | null; loadType: LoadType; perHand: boolean; note: string | null }>;
 }
 
-export interface Today { activeWorkoutId: number | null; next: DayPreview | null; days: DayPreview[]; lastWorkoutDate: string | null }
+export interface Today {
+  activeWorkoutId: number | null; next: DayPreview | null; days: DayPreview[]; lastWorkoutDate: string | null;
+  /** How often the user has really trained lately. */
+  frequency: Frequency | null;
+}
 export interface ProgramDTO { nextDay: number; fiveRMs: Record<string, number | null>; days: DayPreview[] }
 
 export interface WorkoutListItem { id: number; date: string; title: string; setsDone: number; volume: number; prs: number; durationMin: number | null; exercises: string[] }

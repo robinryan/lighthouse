@@ -1,13 +1,13 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router';
-import { getToday, localDate, startWorkout, summary } from '../api';
+import { getProfile, getToday, localDate, saveProfile, startWorkout, summary } from '../api';
 import { useAsync, useSession } from '../hooks';
 import { ExerciseName } from '../components/ExerciseName';
 import { InstallPrompt } from '../components/InstallPrompt';
 import { fmtDate, fmtNum } from '../format';
 
 export function TodayPage() {
-  const { profile } = useSession();
+  const { profile, refreshProfile } = useSession();
   const navigate = useNavigate();
   const date = localDate();
   const today = useAsync(() => getToday(date), [date]);
@@ -34,6 +34,23 @@ export function TodayPage() {
     }
   }
 
+  // Training more often than the plan says: say so, and offer to update it.
+  const freq = t?.frequency;
+  const freqKey = freq?.suggest ? `lh_freq_dismissed_${freq.suggest}_${profile.daysPerWeek}` : '';
+  const [, rerender] = useState(0);
+  const freqDismissed = (() => { try { return localStorage.getItem(freqKey) === '1'; } catch { return false; } })();
+  const showFreq = !!freq?.suggest && freq.suggest > profile.daysPerWeek && !freqDismissed;
+  async function updateDays(n: number) {
+    try {
+      await saveProfile({ ...(await getProfile()), daysPerWeek: n });
+      await refreshProfile();
+    } catch (e) { setError((e as Error).message); }
+  }
+  function hideFreq() {
+    try { localStorage.setItem(freqKey, '1'); } catch { /* ignore */ }
+    rerender((n) => n + 1);
+  }
+
   const hour = new Date().getHours();
   const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
 
@@ -47,6 +64,21 @@ export function TodayPage() {
       </div>
 
       <InstallPrompt />
+
+      {showFreq && freq && (
+        <div className="card stack" role="status">
+          <h2 style={{ margin: 0 }}>You're training more often</h2>
+          <p className="small" style={{ margin: 0 }}>
+            About <b>{fmtNum(freq.perWeek)} days a week</b> lately; your plan says {profile.daysPerWeek}. Workouts already
+            adjust: an accessory you did yesterday becomes a different exercise, a muscle worked hard yesterday gets a
+            rest, and after several days in a row a leg volume lift drops a set. Main lifts and their increases don't change.
+          </p>
+          <div className="row" style={{ gap: 8 }}>
+            <button className="btn primary sm" onClick={() => void updateDays(freq.suggest!)}>Update plan to {freq.suggest} days</button>
+            <button className="btn sm" onClick={hideFreq}>Not now</button>
+          </div>
+        </div>
+      )}
 
       {stats.data && (
         <div className="stat-grid">
