@@ -803,3 +803,63 @@ test('targets come from your recent sessions; first-time accessories get an esti
   const missing = EXERCISES.filter((e) => e.loadType === 'weight' && e.category !== 'mobility' && startingWeight(e, 'T3', p, {}) == null).map((e) => e.id);
   assert.deepEqual(missing, []);
 });
+
+test('training more often than planned: repeats swapped, volume eased after days in a row, frequency noticed', { skip: !ADMIN_URL && 'TEST_DATABASE_URL not set' }, async () => {
+  const { VARIETY_NOTE } = await import('../supabase/functions/_shared/frequency.ts');
+  const L = { id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', email: 'l@example.com' };
+  await pool.query(`INSERT INTO auth.users (id, email, raw_user_meta_data) VALUES ($1, $2, '{"name":"L"}')`, [L.id, L.email]);
+  setDb(fakeSupabase(pool, L));
+  await T.completeOnboarding(profile({ name: 'L', daysPerWeek: 2 }), { squat: 100, bench: 70, deadlift: 120, ohp: 45 });
+  // Lat pulldown on every day, as if the coach added it.
+  const sp = (await T.getProgram())!;
+  for (const d of sp.program.days) if (!d.slots.some((s) => s.exerciseId === 'lat_pulldown')) d.slots.push({ id: `${d.key}-xlp`, tier: 'T3', exerciseId: 'lat_pulldown' });
+  await T.saveProgram(sp);
+  const train = async (date: string) => { const id = await T.startWorkout({ date }); await completeAll(id); await T.finishWorkout(id); return id; };
+
+  await train('2026-10-20'); // A1
+  // Next day: A2's lat pulldown is shown (and started) as a different back exercise.
+  const today = await T.getToday('2026-10-21');
+  assert.equal(today.next!.key, 'A2');
+  const shown = today.next!.exercises.find((e) => e.slotId === 'A2-xlp')!;
+  assert.notEqual(shown.exerciseId, 'lat_pulldown');
+  assert.match(shown.note!, /Instead of Lat Pulldown today/);
+  assert.equal(today.frequency!.suggest, null, 'too early to suggest');
+  const id2 = await T.startWorkout({ date: '2026-10-21' });
+  let w = await T.getWorkout(id2);
+  const swapped = w.exercises.find((e) => e.slotId === 'A2-xlp')!;
+  assert.equal(swapped.exerciseId, shown.exerciseId);
+  assert.equal(swapped.substitutedFrom, 'lat_pulldown');
+  assert.ok(swapped.engineNote!.startsWith(VARIETY_NOTE));
+  // A2 already has a row, so it's something other than a second back exercise.
+  assert.notEqual(swapped.muscles[0], 'back');
+  assert.match(swapped.engineNote!, /today already works your back/);
+  // One tap back to the original.
+  await T.swapExercise(swapped.id, 'lat_pulldown', 'today');
+  w = await T.getWorkout(id2);
+  assert.ok(w.exercises.some((e) => e.slotId === 'A2-xlp' && e.exerciseId === 'lat_pulldown'));
+  assert.equal((await T.getProgram())!.program.days[1].slots.find((s) => s.id === 'A2-xlp')!.exerciseId, 'lat_pulldown', 'program unchanged');
+  await completeAll(id2);
+  await T.finishWorkout(id2);
+
+  // Third day in a row: B1's squat volume drops a set (legs worked yesterday); heavy bench is untouched.
+  const id3 = await T.startWorkout({ date: '2026-10-22' });
+  w = await T.getWorkout(id3);
+  const squat = w.exercises.find((e) => e.exerciseId === 'squat' && e.tier === 'T2')!;
+  const bench = w.exercises.find((e) => e.exerciseId === 'bench' && e.tier === 'T1')!;
+  assert.equal(squat.sets.filter((s) => s.kind === 'working').length, 2);
+  assert.match(squat.schemeLabel, /^2×/);
+  assert.match(squat.engineNote!, /one set fewer today/);
+  assert.equal(bench.sets.filter((s) => s.kind === 'working').length, 5);
+  assert.ok(!bench.engineNote?.startsWith(VARIETY_NOTE));
+  const squatWeight = squat.sets.find((s) => s.kind === 'working')!.targetWeight!;
+  await completeAll(id3);
+  await T.finishWorkout(id3);
+  await train('2026-10-23'); // B2
+
+  // Four sessions in four days on a 2-day plan: suggest updating it. The squat still progressed.
+  const later = await T.getToday('2026-10-24');
+  assert.equal(later.frequency!.sessions, 4);
+  assert.equal(later.frequency!.suggest, 4);
+  const b1 = later.days.find((d) => d.key === 'B1')!;
+  assert.ok(b1.exercises.find((e) => e.exerciseId === 'squat')!.weight! > squatWeight, 'eased squat still progressed');
+});

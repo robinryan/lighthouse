@@ -7,6 +7,7 @@
 // users can't edit their spending or the conversation), and `anthropic` is an
 // Anthropic SDK client.
 
+import { describeFrequency, trainingFrequency } from './frequency.ts';
 import { EXERCISES, EXERCISE_MAP, JOINTS, type Equipment, type Joint, hasEquipment } from './exercises.ts';
 import { type UsageTotals, addUsage, costUsd, emptyUsage } from './pricing.ts';
 import { type Db, type LoadedWorkout, loadProfile, loadProgram, loadWorkout, must } from './queries.ts';
@@ -288,6 +289,11 @@ export async function buildContext(db: Db, workout: LoadedWorkout | null, today:
   const sp = full ? await loadProgram(db) : null;
   const lines: string[] = [`Today: ${today}`];
   lines.push(`Profile: goal=${p.goal}, experience=${p.experience}, units=${p.units}, ${p.daysPerWeek} days/week, ~${p.sessionMinutes} min sessions, bodyweight=${p.bodyweight ?? 'unknown'}`);
+  if (full) {
+    const since = new Date(Date.parse(`${today}T12:00:00Z`) - 21 * 86_400_000).toISOString().slice(0, 10);
+    const done = must(await db.from('workouts').select('date').eq('status', 'completed').gte('date', since).lte('date', today)) as Array<{ date: string }>;
+    lines.push(describeFrequency(trainingFrequency(done.map((w) => w.date), today, p.daysPerWeek), p.daysPerWeek));
+  }
   lines.push(`Equipment: ${p.equipment.join(', ') || 'none listed'}`);
   lines.push(`Protected joints: ${p.limitations.join(', ') || 'none'}${p.limitationNotes ? ` — notes: ${p.limitationNotes}` : ''}`);
   if (sp) {

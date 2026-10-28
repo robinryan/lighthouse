@@ -13,7 +13,8 @@ import {
   type DoneSetRow, type FullProfile, type SetRow, type StoredProgram, type WexRow, type WorkoutRow,
   loadProfile, loadProgram, loadWorkout, must, selectAll,
 } from '../../supabase/functions/_shared/queries.ts';
-import type { NewHealthNote } from '../../supabase/functions/_shared/health.ts';
+import type { HealthSummary, NewHealthNote } from '../../supabase/functions/_shared/health.ts';
+import { type AdaptContext, adaptSession, type Frequency, type SlotPlan, trainingFrequency } from '../../supabase/functions/_shared/frequency.ts';
 import { currentUserId, db } from './client';
 import type { DayPreview, FinishSummary, Today, Workout, WorkoutListItem } from './types';
 
@@ -112,15 +113,49 @@ export async function completeOnboarding(
   await saveProgram({ program: await programFor(profile), nextDay: 0, fiveRMs });
 }
 
-/** The program for a profile, with the health profile folded in. */
-async function programFor(profile: FullProfile) {
+/** Joints to protect and exercises to steer around: the profile plus the health profile. */
+async function healthFor(profile: FullProfile): Promise<{ health: HealthSummary; limitations: Joint[]; avoid: Set<string> }> {
   // Strongly sensitive joints count as limitations, and avoided or disliked exercises are steered around.
   const { getHealthSummary } = await import('./health');
   const health = await getHealthSummary(profile);
   const limitations = [...new Set([...profile.limitations,
-    ...(Object.entries(health.joints) as Array<[typeof profile.limitations[number], number]>).filter(([, s]) => s >= 2).map(([j]) => j)])];
-  const avoid = new Set([...health.avoid.keys(), ...health.dislike]);
+    ...(Object.entries(health.joints) as Array<[Joint, number]>).filter(([, s]) => s >= 2).map(([j]) => j)])];
+  return { health, limitations, avoid: new Set([...health.avoid.keys(), ...health.dislike]) };
+}
+
+/** The program for a profile, with the health profile folded in. */
+async function programFor(profile: FullProfile) {
+  const { limitations, avoid } = await healthFor(profile);
   return generateProgram({ ...profile, limitations }, avoid);
+}
+
+// ---------------------------------------------------------------------------
+// Training more often than planned
+
+/** How often the user really trains, and what's needed to adjust today's session around recent days. */
+async function loadVariety(ctx: Ctx, today: string): Promise<{ adapt: AdaptContext; frequency: Frequency }> {
+  const since = shiftDate(today, -21);
+  const [rows, h] = await Promise.all([
+    selectAll<{ date: string; exercise_id: string; tier: Tier }>(() => db().from('done_sets').select('date, exercise_id, tier')
+      .eq('kind', 'working').gte('date', since).order('set_id')),
+    healthFor(ctx.profile),
+  ]);
+  const frequency = trainingFrequency(rows.map((r) => r.date), today, ctx.profile.daysPerWeek);
+  return {
+    frequency,
+    adapt: {
+      today, recent: rows.map((r) => ({ date: r.date, exerciseId: r.exercise_id, tier: r.tier })),
+      equipment: ctx.profile.equipment, goal: ctx.profile.goal, limitations: h.limitations, avoid: h.avoid,
+      prefer: h.health.prefer, history: new Set(rows.map((r) => r.exercise_id)),
+      generated: generateProgram({ ...ctx.profile, limitations: h.limitations }, h.avoid), streak: frequency.streak,
+    },
+  };
+}
+
+function shiftDate(date: string, by: number): string {
+  const d = new Date(`${date}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + by);
+  return d.toISOString().slice(0, 10);
 }
 
 // ---------------------------------------------------------------------------
@@ -197,17 +232,23 @@ async function stateFromHistory(ctx: Ctx, ex: Exercise, tier: Tier, known?: Lift
 // ---------------------------------------------------------------------------
 // Today / previews
 
-async function preview(ctx: Ctx, dayIndex: number, date: string): Promise<DayPreview> {
+/** `adapt`: show the day as it would start today, adjusted around recent training. */
+async function preview(ctx: Ctx, dayIndex: number, date: string, adapt?: AdaptContext): Promise<DayPreview> {
   const days = ctx.program!.program.days;
   const idx = dayIndex % days.length;
   const day = days[idx];
-  const exercises = await Promise.all(day.slots.map(async (slot) => {
-    const ex = getExercise(slot.exerciseId);
-    const p = prescribe(await liftState(ctx, ex.id, slot.tier), ex, ctx.profile.goal, ctx.profile.units, date);
+  const plans = adapt ? adaptSession(day.slots, adapt) : day.slots.map((): SlotPlan => ({ kind: 'keep' }));
+  const exercises = await Promise.all(day.slots.map(async (slot, i) => {
+    const plan = plans[i];
+    const ex = getExercise(plan.kind === 'swap' ? plan.exerciseId : slot.exerciseId);
+    const p = prescribe(await liftState(ctx, ex.id, slot.tier, plan.kind === 'swap'), ex, ctx.profile.goal, ctx.profile.units, date);
     const work = p.sets.find((s) => s.kind === 'working');
+    const workCount = p.sets.filter((s) => s.kind === 'working').length;
+    const scheme = plan.kind === 'ease' ? p.scheme.label.replace(/^\d+/, String(Math.max(1, workCount - plan.dropSets))) : p.scheme.label;
+    const note = plan.kind === 'keep' ? p.note : plan.kind === 'swap' ? `Instead of ${getExercise(slot.exerciseId).name} today, for variety.` : 'One set fewer today: several training days in a row.';
     return {
-      slotId: slot.id, exerciseId: ex.id, name: ex.name, tier: slot.tier, scheme: p.scheme.label,
-      weight: work?.targetWeight ?? null, loadType: ex.loadType, perHand: !!ex.perHand, note: p.note,
+      slotId: slot.id, exerciseId: ex.id, name: ex.name, tier: slot.tier, scheme,
+      weight: work?.targetWeight ?? null, loadType: ex.loadType, perHand: !!ex.perHand, note,
     };
   }));
   return { dayIndex: idx, key: day.key, name: day.name, exercises };
@@ -228,16 +269,18 @@ export async function activeWorkoutId(): Promise<number | null> {
 
 export async function getToday(date: string): Promise<Today> {
   const ctx = await loadCtx();
+  const variety = ctx.program ? await loadVariety(ctx, date) : null;
   const [active, last, days] = await Promise.all([
     activeWorkoutId(),
     db().from('workouts').select('date').eq('status', 'completed').order('date', { ascending: false }).limit(1).then(must),
-    ctx.program ? Promise.all(ctx.program.program.days.map((_, i) => preview(ctx, i, date))) : Promise.resolve([]),
+    ctx.program ? Promise.all(ctx.program.program.days.map((_, i) => preview(ctx, i, date, variety?.adapt))) : Promise.resolve([]),
   ]);
   return {
     activeWorkoutId: active,
     next: ctx.program ? days[ctx.program.nextDay % days.length] : null,
     days,
     lastWorkoutDate: (last as Array<{ date: string }>)[0]?.date ?? null,
+    frequency: variety?.frequency ?? null,
   };
 }
 
@@ -309,6 +352,7 @@ export async function addStretch(workoutId: number, forWexId: number, stretchId:
 async function insertExercise(
   ctx: Ctx, workoutId: number, exerciseId: string, tier: Tier, position: number,
   slotId: string | null, date: string, substitutedFrom: string | null = null,
+  adjust?: { note: string; dropSets?: number },
 ): Promise<number> {
   const ex = getExercise(exerciseId);
   const { state, source, last } = await liftStateWithSource(ctx, exerciseId, tier, true);
@@ -318,7 +362,14 @@ async function insertExercise(
     : source === 'estimate' && ex.loadType === 'weight' && estimateBasis(ex)?.rough
       ? 'First time: this weight is an estimate from your main lifts. Adjust it so the last reps are hard but clean.'
       : null;
-  const note = [origin, p.note].filter(Boolean).join(' ') || null;
+  if (adjust?.dropSets) {
+    const working = p.sets.filter((s) => s.kind === 'working');
+    const keep = Math.max(1, working.length - adjust.dropSets);
+    const drop = new Set(working.slice(keep));
+    p.sets = p.sets.filter((s) => !drop.has(s));
+    p.scheme = { ...p.scheme, label: p.scheme.label.replace(/^\d+/, String(keep)) };
+  }
+  const note = [adjust?.note, origin, p.note].filter(Boolean).join(' ') || null;
   const row = must(await db().from('workout_exercises').insert({
     workout_id: workoutId, exercise_id: exerciseId, position, tier, slot_id: slotId, scheme_label: p.scheme.label,
     rest_seconds: p.scheme.rest, engine_note: note, substituted_from: substitutedFrom,
@@ -346,6 +397,8 @@ export async function startWorkout(opts: {
   const days = ctx.program.program.days;
   const idx = (opts.dayIndex ?? ctx.program.nextDay) % days.length;
   const day = days[idx];
+  // Training more often than planned: adjust accessories (and, after several days in a row, volume) around recent days.
+  const plans = adaptSession(day.slots, (await loadVariety(ctx, opts.date)).adapt);
   const w = must(await db().from('workouts').insert({ date: opts.date, day_index: idx, title: day.name }).select('id').single()) as { id: number };
   try {
     const plan = opts.autoStretches === false
@@ -355,7 +408,10 @@ export async function startWorkout(opts: {
     for (let i = 0; i < day.slots.length; i++) {
       for (const st of plan.before.get(i) ?? []) await insertStretch(w.id, st.stretchId, st.forId, 'before', pos++);
       const slot = day.slots[i];
-      await insertExercise(ctx, w.id, slot.exerciseId, slot.tier, pos++, slot.id, opts.date);
+      const adj = plans[i];
+      if (adj.kind === 'swap') await insertExercise(ctx, w.id, adj.exerciseId, slot.tier, pos++, slot.id, opts.date, slot.exerciseId, { note: adj.note });
+      else if (adj.kind === 'ease') await insertExercise(ctx, w.id, slot.exerciseId, slot.tier, pos++, slot.id, opts.date, null, { note: adj.note, dropSets: adj.dropSets });
+      else await insertExercise(ctx, w.id, slot.exerciseId, slot.tier, pos++, slot.id, opts.date);
     }
     for (const st of plan.cooldown) await insertStretch(w.id, st.stretchId, st.forId, 'after', pos++);
   } catch (e) {

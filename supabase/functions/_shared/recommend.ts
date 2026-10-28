@@ -58,7 +58,7 @@ function healthScore(ex: Exercise, ctx: RecContext, reasons: string[]): number |
 }
 
 /** Weekly hard-set targets. Lower back and forearms get plenty of indirect work, so they have none. */
-function weeklyTarget(m: string, goal: RecContext['goal']): number {
+export function weeklyTarget(m: string, goal: RecContext['goal']): number {
   if (m === 'lower_back' || m === 'forearms') return 0;
   if (m === 'core' || m === 'calves') return 6;
   return goal === 'hypertrophy' ? 12 : 10;
