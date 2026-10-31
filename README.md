@@ -94,6 +94,7 @@ If you ever want direct control over the database (SQL editor, backups, monitori
 - **Loading:** pages load on demand, the app works offline, and there's an "Install app" prompt (Android) or instructions (iOS).
 
 **Progress**
+- **Your training lately:** a written summary of the last 30 and 90 days. It covers how regularly you trained compared with your plan and the period before, which lifts went up and which have stalled, more reps at the same weight on accessories, sets per session, workout length, total weight moved, and which muscles get plenty or too little work. It ends with one to three things to focus on over the next one to three months. It's rule-based, so it costs nothing to run.
 - Estimated 1RM charts, rep records and session history for each lift.
 - Weekly hard sets per muscle against the 10–20 sets/week evidence band.
 - Training calendar, week streak, bodyweight log and CSV export.
@@ -177,6 +178,7 @@ supabase/
   functions/_shared/          code shared by the app and the edge function
     engine.ts                 programming & progression rules (pure, unit tested)
     frequency.ts              training frequency and session adjustments (pure, unit tested)
+    insights.ts               30/90-day written summary and focus areas (pure, unit tested)
     exercises.ts              exercise catalog (muscles, equipment, joint stress, cues)
     coach.ts                  coach prompt, tools, context, validation
 tests/                        engine unit tests + Postgres integration tests

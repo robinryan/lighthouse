@@ -862,4 +862,11 @@ test('training more often than planned: repeats swapped, volume eased after days
   assert.equal(later.frequency!.suggest, 4);
   const b1 = later.days.find((d) => d.key === 'B1')!;
   assert.ok(b1.exercises.find((e) => e.exerciseId === 'squat')!.weight! > squatWeight, 'eased squat still progressed');
+
+  // The Progress summary reads the same history (a new account: one 30-day summary).
+  const { progressInsights } = await import('../src/data/stats.ts');
+  const ins = await progressInsights('2026-10-24');
+  assert.deepEqual(ins.periods.map((p) => p.days), [30]);
+  assert.match(ins.periods[0].paragraphs[0], /You trained 4 times since you started 5 days ago, about 4 sessions a week, more than the 2 your plan calls for\./);
+  assert.ok(ins.focus.length >= 1 && ins.focus.length <= 3);
 });

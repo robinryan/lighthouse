@@ -3,6 +3,8 @@ import { e1rm } from '../../supabase/functions/_shared/engine.ts';
 import { type DoneSetRow, must, selectAll } from '../../supabase/functions/_shared/queries.ts';
 import { currentUserId, db } from './client';
 import type { ExerciseHistory, FinishSummary, Summary } from './types';
+import { buildInsights, type Insights } from '../../supabase/functions/_shared/insights.ts';
+import { getProfile } from './training';
 
 const doneSets = (filter: (q: ReturnType<typeof base>) => ReturnType<typeof base> = (q) => q) =>
   selectAll<DoneSetRow>(() => filter(base()).order('date').order('workout_id').order('exercise_position').order('position'));
@@ -112,6 +114,28 @@ export async function summary(today: string): Promise<Summary> {
     streakWeeks: streak, muscleSets, recentPRs, mains,
     days: workouts.slice(0, 120).map((w) => w.date),
   };
+}
+
+/** A written look back over the last 30 and 90 days, with things to focus on next. */
+export async function progressInsights(today: string): Promise<Insights> {
+  const since = new Date(today + 'T00:00:00Z');
+  since.setUTCDate(since.getUTCDate() - 180);
+  const from = isoDate(since);
+  const [profile, rows, workouts, first] = await Promise.all([
+    getProfile(),
+    selectAll<DoneSetRow>(() => base().gte('date', from).order('set_id')),
+    selectAll<{ id: number; date: string; started_at: string | null; finished_at: string | null }>(() => db().from('workouts')
+      .select('id, date, started_at, finished_at').eq('status', 'completed').gte('date', from).order('id')),
+    db().from('workouts').select('date').eq('status', 'completed').order('date').limit(1).then(must) as Promise<Array<{ date: string }>>,
+  ]);
+  return buildInsights({
+    today, plannedPerWeek: profile.daysPerWeek, goal: profile.goal, units: profile.units, firstWorkout: first[0]?.date ?? null,
+    sets: rows.map((r) => ({ date: r.date, workoutId: r.workout_id, exerciseId: r.exercise_id, tier: r.tier, weight: r.actual_weight, reps: r.actual_reps })),
+    workouts: workouts.map((w) => ({
+      id: w.id, date: w.date,
+      minutes: w.started_at && w.finished_at ? (Date.parse(w.finished_at) - Date.parse(w.started_at)) / 60_000 : null,
+    })),
+  });
 }
 
 export async function exportCsv(units: string): Promise<string> {
