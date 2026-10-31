@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useParams } from 'react-router';
-import { exerciseHistory, listBodyweight, localDate, logBodyweight, summary, trainedExercises } from '../api';
+import { exerciseHistory, listBodyweight, localDate, logBodyweight, progressInsights, summary, trainedExercises, type Insights } from '../api';
 import { useAsync, useSession } from '../hooks';
 import { fmtDate, fmtNum, MUSCLE_LABELS } from '../format';
 import { LineChart } from '../components/LineChart';
@@ -29,10 +29,46 @@ function Calendar({ days }: { days: string[] }) {
   );
 }
 
+/** The written look back over 30 / 90 days, plus what to focus on next. */
+function InsightsCard({ insights }: { insights: Insights }) {
+  const [days, setDays] = useState<30 | 90>(() => {
+    try { return localStorage.getItem('lh_insight_days') === '90' ? 90 : 30; } catch { return 30; }
+  });
+  const pick = (d: 30 | 90) => { setDays(d); try { localStorage.setItem('lh_insight_days', String(d)); } catch { /* ignore */ } };
+  const p = insights.periods.find((x) => x.days === days) ?? insights.periods[0];
+  return (
+    <div className="card stack insights">
+      <div className="spread">
+        <h3 style={{ margin: 0 }}>Your training lately</h3>
+        {insights.periods.length > 1 && (
+          <div className="chips" role="group" aria-label="Period">
+            {insights.periods.map(({ days: d }) => (
+              <button key={d} className={`chip ${days === d ? 'on' : ''}`} aria-pressed={days === d} onClick={() => pick(d)}>{d} days</button>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="small muted" style={{ fontWeight: 600 }}>{p.headline}</div>
+      {p.paragraphs.map((t, i) => <p key={i} style={{ margin: 0 }}>{t}</p>)}
+      {insights.focus.length > 0 && (
+        <div className="stack" style={{ gap: 8 }}>
+          <h4 style={{ margin: '6px 0 0' }}>Focus for the next 1–3 months</h4>
+          <ol className="focus-list">
+            {insights.focus.map((f) => (
+              <li key={f.title}><b>{f.title}.</b> <span className="small">{f.detail}</span></li>
+            ))}
+          </ol>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ProgressPage() {
   const { profile } = useSession();
   const date = localDate();
   const { data: s } = useAsync(() => summary(date), [date]);
+  const { data: insights } = useAsync(() => progressInsights(date), [date]);
   const { data: list } = useAsync(() => trainedExercises(), []);
   const { data: bw, reload: reloadBw } = useAsync(() => listBodyweight(), []);
   const [bwInput, setBwInput] = useState('');
@@ -43,6 +79,8 @@ export function ProgressPage() {
   return (
     <div className="stack">
       <div className="page-header" style={{ marginBottom: 0 }}><h1>Progress</h1></div>
+
+      {insights && <InsightsCard insights={insights} />}
 
       <div className="card">
         <h3>Main lifts — estimated 1-rep max</h3>

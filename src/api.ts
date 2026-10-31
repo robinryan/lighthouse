@@ -87,3 +87,4 @@ export { EXERCISE_TIPS, videoUrl } from '../supabase/functions/_shared/exerciseT
 export { basicPlanExplanation } from '../supabase/functions/_shared/plan.ts';
 export type { IntakeResult } from '../supabase/functions/_shared/intake.ts';
 export type { AdminReport, AdminUserRow, MyPlan } from '../supabase/functions/_shared/tiers.ts';
+export type { Insights } from '../supabase/functions/_shared/insights.ts';
