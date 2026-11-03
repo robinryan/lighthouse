@@ -123,7 +123,9 @@ label.field > span { font-weight: 600; }
 .tabbar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; height: calc(var(--tabbar-h) + var(--safe-bottom));
   padding-bottom: var(--safe-bottom); display: flex; justify-content: center;
-  background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(16px);
+  /* Solid, on its own layer: a blurred see-through bar sometimes stops repainting on iOS and gets
+     stranded mid-screen after the keyboard closes or the app comes back to the foreground. */
+  background: var(--bg); transform: translateZ(0);
   border-top: 1px solid var(--border);
 }
 .tabbar nav { display: flex; width: 100%; max-width: 640px; }
@@ -174,7 +176,7 @@ label.field > span { font-weight: 600; }
 /* Rest timer */
 .timer-bar {
   position: fixed; left: 0; right: 0; z-index: 25; bottom: calc(var(--tabbar-h) + var(--safe-bottom) + 8px);
-  display: flex; justify-content: center; padding: 0 12px; pointer-events: none;
+  display: flex; justify-content: center; padding: 0 12px; pointer-events: none; transform: translateZ(0);
 }
 .timer-inner {
   pointer-events: auto; width: 100%; max-width: 616px; background: var(--surface-2); border: 1px solid var(--border);
@@ -287,7 +289,7 @@ input, select, textarea { font-size: 16px; } /* < 16px makes iOS zoom in on focu
 /* Sticky workout toolbar: tools on the left, elapsed time and Finish on the right. */
 .workout-header {
   position: sticky; top: 0; z-index: 15; margin: -16px -16px 8px; padding: calc(env(safe-area-inset-top, 0px) + 8px) 12px 8px;
-  background: color-mix(in srgb, var(--bg) 90%, transparent); backdrop-filter: blur(14px);
+  background: var(--bg); transform: translateZ(0); /* see .tabbar */
   display: flex; align-items: center; gap: 4px;
 }
 .tool {
