@@ -57,8 +57,6 @@ test('coach request adapts to the model (Haiku: basic web search, no fallbacks)'
   const opus = requestOptionsFor('claude-opus-5-5');
   assert.equal((opus.tools[0] as { type: string }).type, 'web_search_20260209');
   assert.deepEqual(opus.fallback, { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' });
-  const sonnet = requestOptionsFor('claude-sonnet-5-5');
-  assert.equal((sonnet.tools[0] as { type: string }).type, 'web_search_20260209');
   const haiku = requestOptionsFor('claude-haiku-5-5');
   assert.equal((haiku.tools[0] as { type: string; max_uses: number }).type, 'web_search_20250305');
   assert.equal((haiku.tools[0] as { max_uses: number }).max_uses, 2);
@@ -112,16 +110,16 @@ test('plan explanation: ties the plan to the profile and names swaps for sore jo
 test('model routing: cheapest model that answers well, stronger models for safety', async () => {
   const { routeFor } = await import('../supabase/functions/_shared/coach.ts');
   const m = (tier: any, kind: any, research = false) => { const r = routeFor(tier, kind, research); return `${r.model.split('-')[1]}/${r.effort}${r.research ? '/search' : ''}`; };
-  // Free: Haiku except pain/injury (Sonnet); no research.
+  // Free: Haiku except pain/injury (Opus); no research.
   assert.equal(m('free', 'simple'), 'haiku/low');
   assert.equal(m('free', 'personal'), 'haiku/low');
-  assert.equal(m('free', 'safety'), 'sonnet/medium');
+  assert.equal(m('free', 'safety'), 'opus/medium');
   assert.equal(m('free', 'personal', true), 'haiku/low', 'research is a paid feature');
-  assert.equal(m('free', 'safety', true), 'sonnet/medium');
-  // Paid and admin: Haiku → Sonnet → Opus, research on Opus.
+  assert.equal(m('free', 'safety', true), 'opus/medium');
+  // Paid and admin: Haiku for quick questions, Opus for everything that needs reasoning.
   for (const tier of ['paid', 'admin']) {
     assert.equal(m(tier, 'simple'), 'haiku/low');
-    assert.equal(m(tier, 'personal'), 'sonnet/low');
+    assert.equal(m(tier, 'personal'), 'opus/low');
     assert.equal(m(tier, 'safety'), 'opus/medium');
     assert.equal(m(tier, 'simple', true), 'opus/medium/search');
   }

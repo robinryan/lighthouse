@@ -107,7 +107,7 @@ If you ever want direct control over the database (SQL editor, backups, monitori
 - Rebuilding the program (Settings → Save & rebuild) starts from a fresh program, so accessories the coach added are dropped.
 - The message box sits at the top of the chat; the newest question and answer appear right under it.
 - It isn't medical advice. It tells you to stop and see a professional for sharp pain, swelling or numbness.
-- Each question goes to the cheapest Claude model that answers it well (see **Plans** below), with server-side refusal fallbacks on Sonnet and Opus.
+- Each question goes to the cheapest Claude model that answers it well (see **Plans** below), with server-side refusal fallbacks on Opus.
 
 **Plans** (free, paid, admin)
 - Every account is **free** until an admin moves it to **paid** on the admin page. Admins are set by email: `robin.ryan@gmail.com` by default, or the comma-separated `COACH_ADMIN_EMAILS` secret.
@@ -116,10 +116,10 @@ If you ever want direct control over the database (SQL editor, backups, monitori
   | Question | Free | Paid and admin |
   |---|---|---|
   | Simple | Haiku 5.5 | Haiku 5.5 |
-  | Personal | Haiku 5.5 | Sonnet 5.5 |
-  | Pain, injury, medical | Sonnet 5.5 | Opus 5.5 |
+  | Personal | Haiku 5.5 | Opus 5.5 |
+  | Pain, injury, medical | Opus 5.5 | Opus 5.5 |
   | 🔎 Research (web search) | not included | Opus 5.5 |
-- Onboarding (reading a new user's description and explaining their plan) uses Sonnet for free users and Opus for paid users.
+- Onboarding (reading a new user's description and explaining their plan) uses Opus 5.5 for everyone.
 - Settings shows each user's plan and how much of this month's coach allowance they've used, as a percentage. Only admins see dollar amounts, including the cost and model of each coach reply.
 - **Admin page** (Settings → Open admin): every user with their plan, workouts, coach messages and spending this month and all time, plus spending by model and by day. A Free/Paid switch on each user changes their plan. Chat content isn't shown.
 
@@ -133,6 +133,7 @@ If you ever want direct control over the database (SQL editor, backups, monitori
 - **Short answers:** about 120 words, up to about 250 for injury and research questions.
 
 **Abuse protection** (so nobody can use the coach as a free general-purpose AI on your bill)
+- **Hardening:** message limits are enforced on what's stored, so questions sent at the same moment can't slip past them. The admin email list only counts for a confirmed address (keep email confirmation on in the database's auth settings). Server errors are logged, not shown to users. Coach source links must be web links. The site sends security headers (no third-party or inline scripts, no framing). Cached data on the phone is cleared on sign-out and when another account signs in.
 - **Topic screen:** Claude Haiku 5.5 checks each message first, for a fraction of a cent. Off-topic requests (code, essays, homework, general knowledge) get a polite one-line refusal and never reach the main model. The coach's own instructions also refuse off-topic tasks.
 - **Tamper-proof usage records:** only the coach function can write chat messages. Users can read them and tap Apply/Dismiss, but can't edit, delete or reprice them, so they can't reset their budget or plant fake replies.
 - **Limits**, all checked before any API call. You can change each one with a secret (0 turns it off):

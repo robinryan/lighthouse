@@ -61,6 +61,29 @@ function Shell({ children }: { children: React.ReactNode }) {
 const OPENED_RECOVERY_LINK = /(^|[#&?])type=recovery(&|$)/.test(window.location.hash);
 const LINK_ERROR = takeAuthLinkError();
 
+/**
+ * Data kept on the device for offline use belongs to one account: cached server responses, queued
+ * set edits, a coach question in flight and the rest timer. Cached responses are removed whenever
+ * nobody is signed in, and everything is removed when a different account signs in on the same
+ * phone, so the next person can't see or replay it.
+ */
+const LAST_USER = 'lh_last_user';
+async function forgetOtherAccount(userId: string | null) {
+  let last: string | null = null;
+  try { last = localStorage.getItem(LAST_USER); } catch { /* storage unavailable */ }
+  if (userId && (last === null || last === userId)) {
+    try { localStorage.setItem(LAST_USER, userId); } catch { /* ignore */ }
+    return;
+  }
+  if (userId) {
+    try {
+      for (const k of ['lh_outbox', 'lh_coach_pending', 'lh_timer']) localStorage.removeItem(k);
+      localStorage.setItem(LAST_USER, userId);
+    } catch { /* ignore */ }
+  }
+  try { if ('caches' in window) await caches.delete('api'); } catch { /* ignore */ }
+}
+
 export function App() {
   if (!isConfigured()) {
     return (
@@ -82,6 +105,7 @@ function SignedInApp() {
   const [recovering, setRecovering] = useState(OPENED_RECOVERY_LINK);
   const load = useCallback(async (u: User | null) => {
     refreshPlan(); // a different account may have a different plan
+    await forgetOtherAccount(u?.id ?? null);
     if (!u) { setUser(null); setProfile(null); return; }
     try {
       setProfile(await getProfile() as Profile);
@@ -114,7 +138,7 @@ function SignedInApp() {
     refreshProfile: async () => setProfile(await getProfile() as Profile),
     logout: async () => {
       await db().auth.signOut();
-      try { const keys = await caches.keys(); await Promise.all(keys.filter((k) => k === 'api').map((k) => caches.delete(k))); } catch { /* ignore */ }
+      await forgetOtherAccount(null);
       setUser(null); setProfile(null);
     },
   } : null), [user, profile]);

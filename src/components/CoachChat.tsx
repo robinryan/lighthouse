@@ -222,7 +222,7 @@ export function CoachChat({ workoutId, suggestions, onApplied, initialPrompt }: 
       {m.sources.length > 0 && (
         <div className="sources">
           <div className="muted">Sources</div>
-          {m.sources.slice(0, 6).map((s) => <a key={s.url} href={s.url} target="_blank" rel="noreferrer noopener">{s.title}</a>)}
+          {m.sources.filter((s) => /^https?:\/\//i.test(s.url)).slice(0, 6).map((s) => <a key={s.url} href={s.url} target="_blank" rel="noreferrer noopener">{s.title}</a>)}
         </div>
       )}
     </div>

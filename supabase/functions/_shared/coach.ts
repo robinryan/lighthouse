@@ -15,7 +15,7 @@ import { type HealthNote, describeHealth, describeSkip, parseSkip, summarizeHeal
 import { OFF_TOPIC_REPLY, type QuestionKind, checkTopic } from './topic.ts';
 
 export const DEFAULT_MODEL = 'claude-opus-5-5';
-export const MODELS = { haiku: 'claude-haiku-5-5', sonnet: 'claude-sonnet-5-5', opus: 'claude-opus-5-5' } as const;
+export const MODELS = { haiku: 'claude-haiku-5-5', opus: 'claude-opus-5-5' } as const;
 /** Earlier messages sent with each question; older coach replies are shortened. */
 const MAX_HISTORY = 4;
 const HISTORY_REPLY_CHARS = 500;
@@ -32,15 +32,16 @@ export type Tier = 'free' | 'paid' | 'admin';
 export interface Route { model: string; effort: 'low' | 'medium'; research: boolean; kind: QuestionKind | 'research' }
 
 /**
- * The cheapest model that answers a question well. Free users get Haiku except for pain and
- * injury questions (Sonnet). Paid users and admins get Sonnet for personal questions and Opus
- * for pain, injury and research. Research (web search) is a paid feature.
+ * Which model answers. Haiku handles quick general questions (and everything except pain and
+ * injury for free users); anything that needs reasoning goes to Opus 5.5: personal questions
+ * for paid users and admins, pain and injury questions for everyone, and research.
+ * Research (web search) is a paid feature.
  */
 export function routeFor(tier: Tier, kind: QuestionKind, research: boolean): Route {
   const plus = tier !== 'free';
   if (research && plus) return { model: MODELS.opus, effort: 'medium', research: true, kind: 'research' };
-  if (kind === 'safety') return { model: plus ? MODELS.opus : MODELS.sonnet, effort: 'medium', research: false, kind };
-  if (kind === 'personal') return { model: plus ? MODELS.sonnet : MODELS.haiku, effort: 'low', research: false, kind };
+  if (kind === 'safety') return { model: MODELS.opus, effort: 'medium', research: false, kind };
+  if (kind === 'personal') return { model: plus ? MODELS.opus : MODELS.haiku, effort: 'low', research: false, kind };
   return { model: MODELS.haiku, effort: 'low', research: false, kind };
 }
 /** Default monthly spending cap per user (USD); override with the COACH_MONTHLY_BUDGET_USD secret. 0 = no cap. */
@@ -244,7 +245,7 @@ export const TOOLS = [
 /**
  * Model-specific request options. Haiku models don't support the newer web-search tool
  * (dynamic filtering) or server-side refusal fallbacks, so they get the basic search tool
- * and no fallback. Opus and Sonnet fall back to another model if a safety classifier declines.
+ * and no fallback. Opus falls back to another model if a safety classifier declines.
  */
 export function requestOptionsFor(model: string, withSearch = true) {
   const haiku = model.startsWith('claude-haiku');
@@ -490,6 +491,9 @@ export interface MessageRow {
 /** Bookkeeping rows (e.g. reading an onboarding description) that count toward limits but aren't part of the chat. */
 export const isHiddenMessage = (m: { usage?: { kind?: string } | null }) => m.usage?.kind === 'intake_extract';
 
+/** An error whose message is written for the user and safe to show them. Anything else is reported generically. */
+export class CoachUserError extends Error {}
+
 /** A spending cap or rate limit was hit; nothing was sent to the API. */
 export class CoachLimitError extends Error {
   constructor(public code: 'budget' | 'app_budget' | 'hourly' | 'daily', message: string) { super(message); }
@@ -525,7 +529,7 @@ interface LimitStats { user_month: number; all_month: number; last_hour: number;
 export async function limitStats(admin: Db, userId: string): Promise<LimitStats> {
   const res = await admin.rpc('coach_limits', { p_user: userId });
   if (res.error && /coach_limits/.test(res.error.message)) {
-    throw new Error('The coach needs a database update: apply the migration supabase/migrations/20261013000000_coach_lockdown.sql, then try again.');
+    throw new CoachUserError('The coach needs a database update: apply the migration supabase/migrations/20261013000000_coach_lockdown.sql, then try again.');
   }
   const s = must(res) as LimitStats;
   return { user_month: Number(s.user_month), all_month: Number(s.all_month), last_hour: Number(s.last_hour), last_day: Number(s.last_day) };
@@ -583,6 +587,25 @@ export async function runCoach(opts: {
   const store = async (row: Record<string, unknown>) =>
     must(await admin.from('coach_messages').insert({ user_id: userId, workout_id: workoutId, ...row }).select('*').single()) as MessageRow;
 
+  // Save the question, then count what is actually stored: several questions sent at the same
+  // moment all pass the first check, so each one is allowed only if it is within the limit among
+  // the user's questions up to and including itself.
+  const storeQuestion = async () => {
+    const row = await store({ role: 'user', content: text });
+    if (limits.hourly <= 0 && limits.daily <= 0) return;
+    const dayAgo = new Date(Date.now() - 86_400_000).toISOString();
+    const earlier = must(await admin.from('coach_messages').select('id, created_at').eq('user_id', userId).eq('role', 'user')
+      .gte('created_at', dayAgo).lte('id', row.id).order('id', { ascending: false }).limit(1000)) as Array<{ id: number; created_at: string }>;
+    const hourAgo = Date.now() - 3_600_000;
+    const lastHour = earlier.filter((m) => Date.parse(m.created_at) >= hourAgo).length;
+    try {
+      checkLimits({ user_month: 0, all_month: 0, last_hour: lastHour - 1, last_day: earlier.length - 1 }, limits);
+    } catch (err) {
+      await admin.from('coach_messages').delete().eq('id', row.id);
+      throw err;
+    }
+  };
+
   // In-workout chats act on that workout; the general chat can act on whatever workout is in progress.
   let targetId = workoutId;
   if (targetId == null) {
@@ -608,7 +631,7 @@ export async function runCoach(opts: {
   const modelOpts = requestOptionsFor(model, route.research);
   const context = topic.onTopic ? await buildContext(db, workout, today, route.kind) : '';
   if (!topic.onTopic) {
-    await store({ role: 'user', content: text });
+    await storeQuestion();
     const record: CoachUsage = {
       ...topic.usage, model: 'claude-haiku-5-5', effort: 'low', costUsd: topic.costUsd, topicCostUsd: topic.costUsd, offTopic: true,
       tier, budgetUsd: budget, monthSpentUsd: Math.round((spent + topic.costUsd) * 10_000) / 10_000,
@@ -630,7 +653,7 @@ export async function runCoach(opts: {
     ],
   });
 
-  await store({ role: 'user', content: text });
+  await storeQuestion();
 
   const actions: CoachAction[] = [];
   const texts: string[] = [];
@@ -666,7 +689,7 @@ export async function runCoach(opts: {
       if (block.type !== 'text') continue;
       turnText += block.text;
       for (const c of block.citations ?? []) {
-        if (c.type === 'web_search_result_location') sources.set(c.url, c.title ?? c.url);
+        if (c.type === 'web_search_result_location' && /^https?:\/\//i.test(String(c.url))) sources.set(c.url, String(c.title ?? c.url).slice(0, 200));
       }
     }
     if (turnText.trim()) texts.push(turnText.trim());

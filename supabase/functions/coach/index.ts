@@ -20,7 +20,7 @@
 
 import Anthropic from 'npm:@anthropic-ai/sdk@0.132.1';
 import { createClient } from 'npm:@supabase/supabase-js@2.117.3';
-import { CoachLimitError, type CoachLimits, MAX_MESSAGE_CHARS, TIER_LIMITS, type Tier, runCoach } from '../_shared/coach.ts';
+import { CoachLimitError, type CoachLimits, CoachUserError, MAX_MESSAGE_CHARS, TIER_LIMITS, type Tier, runCoach } from '../_shared/coach.ts';
 import { MAX_INTAKE_CHARS, runIntakeExplain, runIntakeExtract } from '../_shared/intake.ts';
 import { adminEmails, adminReport, myPlan, resolveTier, setTier } from '../_shared/tiers.ts';
 
@@ -111,14 +111,15 @@ Deno.serve(async (req) => {
     const admin = createClient(Deno.env.get('SUPABASE_URL')!, serviceKey, { auth: { persistSession: false } });
     const admins = adminEmails(Deno.env.get('COACH_ADMIN_EMAILS'));
     const userId = userData.user.id;
-    const tier = await resolveTier(admin, { id: userId, email: userData.user.email }, admins);
+    const tier = await resolveTier(admin, { id: userId, email: userData.user.email, email_confirmed_at: userData.user.email_confirmed_at }, admins);
     const limits = limitsFor(tier);
 
     if (mode === 'me') return json(await myPlan(admin, userId, tier, limits));
     if (mode === 'admin_report' || mode === 'admin_set_tier') {
       if (tier !== 'admin') return json({ error: 'Admins only' }, 403);
       if (mode === 'admin_report') return json(await adminReport(admin, admins));
-      if (typeof body.userId !== 'string' || (body.tier !== 'free' && body.tier !== 'paid')) {
+      const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (typeof body.userId !== 'string' || !UUID.test(body.userId) || (body.tier !== 'free' && body.tier !== 'paid')) {
         return json({ error: 'userId and tier (free or paid) are required' }, 400);
       }
       await setTier(admin, userId, body.userId, body.tier, admins);
@@ -141,8 +142,10 @@ Deno.serve(async (req) => {
     }
     if (err instanceof Anthropic.RateLimitError) return json({ error: 'The coach is busy right now — try again in a minute.' }, 429);
     if (err instanceof Anthropic.AuthenticationError) return json({ error: 'The AI coach API key is invalid.' }, 503);
-    if (err instanceof Anthropic.APIError) return json({ error: `Coach error: ${err.message}` }, 502);
+    if (err instanceof CoachUserError) return json({ error: err.message }, 400);
+    // Details stay in the function logs: upstream and database errors can name internals.
     console.error(err);
-    return json({ error: (err as Error).message || 'Something went wrong' }, 500);
+    if (err instanceof Anthropic.APIError) return json({ error: 'The coach couldn\'t answer just now. Please try again.' }, 502);
+    return json({ error: 'Something went wrong. Please try again.' }, 500);
   }
 });

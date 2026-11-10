@@ -378,8 +378,8 @@ test('coach cost controls: caching, trimmed prompt, effort, search limits, usage
   const req = requests[0];
   assert.deepEqual(req.cache_control, { type: 'ephemeral' }, 'conversation breakpoint (5 min)');
   assert.deepEqual(req.system[0].cache_control, { type: 'ephemeral', ttl: '1h' }, 'system breakpoint (1 hour)');
-  // Routing (paid by default): a personal question → Sonnet, pain → Opus, research → Opus with web search.
-  assert.deepEqual(requests.map((r) => r.model), ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-opus-5-5']);
+  // Routing (paid by default): personal questions, pain and research all go to Opus 5.5 (research with web search).
+  assert.deepEqual(requests.map((r) => r.model), ['claude-opus-5-5', 'claude-opus-5-5', 'claude-opus-5-5']);
   assert.ok(!req.tools.some((t: any) => String(t.type).startsWith('web_search')));
   const search = requests[2].tools.find((t: any) => t.type === 'web_search_20260209');
   assert.equal(search.max_uses, 2);
@@ -402,7 +402,7 @@ test('coach cost controls: caching, trimmed prompt, effort, search limits, usage
   assert.equal(r3.usage!.topicCostUsd, 0.0004, 'Haiku topic check: 3000 in × $0.10 + 200 out × $0.50 per MTok');
   assert.ok(Math.abs(r3.cost_usd! - (opusCost + 0.0004)) < 1e-6);
 
-  // Budget: 2 Opus + 7 Sonnet replies ≈ $0.26 spent; a $0.20 cap blocks the next message without calling the API.
+  // Budget: 9 Opus replies ≈ $0.26 spent; a $0.20 cap blocks the next message without calling the API.
   const before = requests.length;
   await assert.rejects(runCoach({ db: asE, admin: asAdmin, userId: E.id, anthropic, workoutId: null, text: 'one more', today: '2026-10-10', limits: { budgetUsd: 0.2 } }), /budget/);
   assert.equal(requests.length, before);
@@ -673,7 +673,7 @@ test('user classes: free routing, smaller context, plan, admin report and class 
   const { myPlan, adminReport, setTier, resolveTier, adminEmails } = await import('../supabase/functions/_shared/tiers.ts');
   const { TIER_LIMITS } = await import('../supabase/functions/_shared/coach.ts');
   const J = { id: '99999999-9999-4999-8999-999999999999', email: 'free@example.com' };
-  const ADM = { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', email: 'Robin.Ryan@gmail.com' };
+  const ADM = { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', email: 'Robin.Ryan@gmail.com', email_confirmed_at: '2026-10-01T00:00:00Z' };
   await pool.query(`INSERT INTO auth.users (id, email, raw_user_meta_data) VALUES ($1, $2, '{"name":"J"}'), ($3, $4, '{"name":"Robin"}')`, [J.id, J.email, ADM.id, ADM.email]);
   const asJ = fakeSupabase(pool, J);
   setDb(asJ);
@@ -683,6 +683,7 @@ test('user classes: free routing, smaller context, plan, admin report and class 
 
   // Classes: email list → admin (case-insensitive); everyone else free until changed.
   assert.equal(await resolveTier(asAdmin, ADM, admins), 'admin');
+  assert.equal(await resolveTier(asAdmin, { ...ADM, email_confirmed_at: null }, admins), 'free', 'an unconfirmed admin address is not an admin');
   assert.equal(await resolveTier(asAdmin, J, admins), 'free');
 
   const requests: any[] = [];
@@ -697,7 +698,7 @@ test('user classes: free routing, smaller context, plan, admin report and class 
   await ask('Should I add weight to bench next time?', true);
   kind = 'simple';
   await ask('My lower back hurts on deadlifts');
-  assert.deepEqual(requests.map((r) => r.model), ['claude-haiku-5-5', 'claude-haiku-5-5', 'claude-sonnet-5-5']);
+  assert.deepEqual(requests.map((r) => r.model), ['claude-haiku-5-5', 'claude-haiku-5-5', 'claude-opus-5-5']);
   assert.ok(requests.every((r) => !r.tools.some((t: any) => String(t.type).startsWith('web_search'))), 'no research on free');
   assert.ok(!/Research requested/.test(requests[1].messages.at(-1).content[1].text));
   assert.equal(simple.usage!.tier, 'free');
@@ -726,7 +727,7 @@ test('user classes: free routing, smaller context, plan, admin report and class 
   assert.equal(row.month_messages, 3);
   assert.ok(row.month_usd > 0 && row.total_usd >= row.month_usd);
   assert.equal(report.users.find((u) => u.id === ADM.id)!.fixedAdmin, true);
-  assert.ok(report.byModel.some((m) => m.model === 'claude-haiku-5-5') && report.byModel.some((m) => m.model === 'claude-sonnet-5-5'));
+  assert.ok(report.byModel.some((m) => m.model === 'claude-haiku-5-5') && report.byModel.some((m) => m.model === 'claude-opus-5-5'));
   assert.ok(report.byDay.length >= 1 && report.totals.monthUsd > 0);
   await setTier(asAdmin, ADM.id, J.id, 'paid', admins);
   assert.equal(await resolveTier(asAdmin, J, admins), 'paid');
@@ -869,4 +870,40 @@ test('training more often than planned: repeats swapped, volume eased after days
   assert.deepEqual(ins.periods.map((p) => p.days), [30]);
   assert.match(ins.periods[0].paragraphs[0], /You trained 4 times since you started 5 days ago, about 4 sessions a week, more than the 2 your plan calls for\./);
   assert.ok(ins.focus.length >= 1 && ins.focus.length <= 3);
+});
+
+test('security: message limits hold for questions sent at the same moment; only web links are kept as sources', { skip: !ADMIN_URL && 'TEST_DATABASE_URL not set' }, async () => {
+  const S = { id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', email: 's@example.com' };
+  await pool.query(`INSERT INTO auth.users (id, email, raw_user_meta_data) VALUES ($1, $2, '{"name":"S"}')`, [S.id, S.email]);
+  const asS = fakeSupabase(pool, S);
+  setDb(asS);
+  await T.completeOnboarding(profile({ name: 'S' }), { squat: 100, bench: 70, deadlift: 120, ohp: 45 });
+  let calls = 0;
+  const reply = () => ({ stop_reason: 'end_turn', usage: { input_tokens: 100, output_tokens: 50 }, content: [{
+    type: 'text', text: 'Rest two to three minutes.',
+    citations: [
+      { type: 'web_search_result_location', url: 'https://example.org/rest', title: 'Rest intervals' },
+      { type: 'web_search_result_location', url: 'javascript:alert(1)', title: 'Bad link' },
+    ],
+  }] });
+  const anthropic = { messages: { create: ON_TOPIC }, beta: { messages: { stream: () => { calls++; return { finalMessage: async () => reply() }; } } } };
+  const ask = (i: number) => runCoach({ db: asS, admin: asAdmin, userId: S.id, anthropic, workoutId: null, text: `How long should I rest? (${i})`, today: '2026-11-10', limits: { hourly: 3, daily: 0, budgetUsd: 0, totalBudgetUsd: 0 } });
+
+  // Eight at once with a limit of three an hour: no more than three get an answer.
+  const results = await Promise.allSettled(Array.from({ length: 8 }, (_, i) => ask(i)));
+  const ok = results.filter((r) => r.status === 'fulfilled');
+  const rejected = results.filter((r) => r.status === 'rejected') as PromiseRejectedResult[];
+  assert.ok(ok.length <= 3, `${ok.length} answered`);
+  assert.ok(rejected.length >= 5 && rejected.every((r) => /messages in the last hour/.test(String(r.reason?.message))));
+  assert.ok(calls <= 3, `${calls} model calls`);
+  // Rejected questions aren't left behind to count against the user.
+  const { rows } = await pool.query(`SELECT count(*)::int AS n FROM coach_messages WHERE user_id = $1 AND role = 'user'`, [S.id]);
+  assert.equal(rows[0].n, ok.length);
+  await assert.rejects(ask(99), /messages in the last hour/);
+
+  // Sources: http(s) only.
+  if (ok.length) {
+    const msg = (ok[0] as PromiseFulfilledResult<any>).value;
+    assert.deepEqual(msg.sources, [{ url: 'https://example.org/rest', title: 'Rest intervals' }]);
+  }
 });

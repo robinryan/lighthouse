@@ -2,7 +2,7 @@
 // even before the user_tiers row exists); everyone else's class is in user_tiers, default free.
 // Everything here runs with the service-role client inside the coach edge function.
 
-import { type CoachLimits, type Tier, limitStats } from './coach.ts';
+import { type CoachLimits, CoachUserError, type Tier, limitStats } from './coach.ts';
 import { type Db, must } from './queries.ts';
 import { VERSION } from './version.ts';
 
@@ -14,8 +14,12 @@ export function adminEmails(raw?: string | null): string[] {
   return list.length ? list : DEFAULT_ADMIN_EMAILS;
 }
 
-export async function resolveTier(admin: Db, user: { id: string; email?: string | null }, admins: string[]): Promise<Tier> {
-  if (user.email && admins.includes(user.email.toLowerCase())) return 'admin';
+/**
+ * The email list only counts for an address the account has confirmed (Supabase sets
+ * email_confirmed_at). Without that, someone could claim an admin address they don't own.
+ */
+export async function resolveTier(admin: Db, user: { id: string; email?: string | null; email_confirmed_at?: string | null }, admins: string[]): Promise<Tier> {
+  if (user.email && user.email_confirmed_at && admins.includes(user.email.toLowerCase())) return 'admin';
   const row = must(await admin.from('user_tiers').select('tier').eq('user_id', user.id).maybeSingle()) as { tier: Tier } | null;
   return row?.tier ?? 'free';
 }
@@ -84,10 +88,10 @@ export async function adminReport(admin: Db, admins: string[]): Promise<AdminRep
 
 /** Move a user between free and paid. Admins come from the email list, not from here. */
 export async function setTier(admin: Db, actorId: string, userId: string, tier: Tier, admins: string[]) {
-  if (tier !== 'free' && tier !== 'paid') throw new Error('Users can be moved between free and paid only');
+  if (tier !== 'free' && tier !== 'paid') throw new CoachUserError('Users can be moved between free and paid only');
   const target = must(await admin.from('profiles').select('user_id').eq('user_id', userId).maybeSingle());
-  if (!target) throw new Error('User not found');
+  if (!target) throw new CoachUserError('User not found');
   const report = await adminReport(admin, admins);
-  if (report.users.find((u) => u.id === userId)?.fixedAdmin) throw new Error('This account is always an admin (set by email).');
+  if (report.users.find((u) => u.id === userId)?.fixedAdmin) throw new CoachUserError('This account is always an admin (set by email).');
   must(await admin.from('user_tiers').upsert({ user_id: userId, tier, updated_at: new Date().toISOString(), updated_by: actorId }, { onConflict: 'user_id' }));
 }
