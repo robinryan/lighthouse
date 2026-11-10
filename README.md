@@ -163,6 +163,7 @@ Tests:
 
 ```bash
 TEST_DATABASE_URL=postgres://postgres@localhost:5432/postgres npm test
+TEST_DATABASE_URL=postgres://postgres@localhost:5432/postgres npm run e2e   # browser tests
 ```
 
 ## Layout
@@ -183,4 +184,6 @@ supabase/
     exercises.ts              exercise catalog (muscles, equipment, joint stress, cues)
     coach.ts                  coach prompt, tools, context, validation
 tests/                        engine unit tests + Postgres integration tests
+tests/e2e/                    browser tests (phone-sized) against a local stand-in for Supabase
+.github/workflows/ci.yml      runs types, tests, build and browser tests on every push
 ```

@@ -84,7 +84,7 @@ export function SettingsPage() {
         {draft.units !== profile.units && <p className="notice">Switching units converts all your logged weights.</p>}
         {error && <p className="error">{error}</p>}
         {saved && <p className="small" style={{ color: 'var(--good)' }}>{saved}</p>}
-        <div className="row">
+        <div className="row wrap">
           <button className="btn primary grow" onClick={() => save(false)}>Save</button>
           <button className="btn grow" onClick={() => save(true)}>Save & rebuild program</button>
         </div>

@@ -279,7 +279,7 @@ export function CoachChat({ workoutId, suggestions, onApplied, initialPrompt }: 
             {t === 0 && sending && (
               <div className="bubble assistant">
                 <div className="typing"><span /><span /><span /></div>
-                <div className="tiny muted" style={{ marginTop: 4 }}>{research && canResearch ? 'Researching — can take ~30s' : 'Thinking…'}</div>
+                <div className="tiny muted" style={{ marginTop: 4 }}>{waiting ? 'Thinking… you can switch apps; the answer will be here when you\'re back.' : research && canResearch ? 'Researching — can take ~30s' : 'Thinking…'}</div>
               </div>
             )}
           </div>

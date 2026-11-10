@@ -238,7 +238,6 @@ function describe(a: Analysis, input: InsightInput): PeriodInsight {
 }
 
 const orList = (xs: string[]) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} or ${xs.at(-1)}`);
-const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /** One to three things to work on over the next one to three months, most important first. */
 function focus(a30: Analysis, a90: Analysis, input: InsightInput): Focus[] {

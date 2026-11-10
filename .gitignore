@@ -11,3 +11,4 @@ vitest.config.*.timestamp-*.mjs
 
 # Created by local `deno check`; the edge function pins versions in its imports
 /deno.lock
+tests/e2e/output/
