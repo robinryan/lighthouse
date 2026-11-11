@@ -1,4 +1,4 @@
-// Supabase Edge Function: the Gym Bestie AI coach.
+// Supabase Edge Function: the Gym Bestie AI coach. Forced redeploy, no behaviour change.
 //
 // POST { workoutId: number | null, text: string, research?: boolean } with the user's Authorization header.
 // Other modes (POST { mode, ... }):
