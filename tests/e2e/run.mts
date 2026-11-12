@@ -92,6 +92,27 @@ await step('start a workout, log a set, rest timer starts', async () => {
   if (!head || head.y > 2) throw new Error('workout toolbar is not at the top');
 });
 
+await step('pinned bars follow the visible screen when iOS leaves the page shifted', async () => {
+  // Reproduce the iOS state: the visible screen sits 150px below where the page thinks it is.
+  // Passed as text so the test runner doesn't rewrite the functions inside it.
+  const moved = await page.evaluate(`(async () => {
+    const vv = window.visualViewport;
+    const top = (s) => Math.round(document.querySelector(s).getBoundingClientRect().top);
+    const wait = () => new Promise((r) => setTimeout(r, 100));
+    const before = top('.tabbar');
+    Object.defineProperty(vv, 'offsetTop', { configurable: true, get: () => 150 });
+    vv.dispatchEvent(new Event('scroll'));
+    await wait();
+    const shifted = ['.tabbar', '.timer-bar', '.workout-header'].map(top);
+    delete vv.offsetTop;
+    vv.dispatchEvent(new Event('scroll'));
+    await wait();
+    return { before, shifted, after: top('.tabbar') };
+  })()`) as { before: number; shifted: number[]; after: number };
+  if (moved.shifted[0] !== moved.before + 150 || moved.shifted[2] !== 150) throw new Error(`bars didn't follow: ${JSON.stringify(moved)}`);
+  if (moved.after !== moved.before) throw new Error(`bars didn't return: ${JSON.stringify(moved)}`);
+});
+
 await step('the logged set survives a reload', async () => {
   await page.reload();
   await card(page, /^Back Squat/).getByRole('button', { name: 'Mark not done' }).first().waitFor();

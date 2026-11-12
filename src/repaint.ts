@@ -22,8 +22,36 @@ function nudge() {
   });
 }
 
+/**
+ * After the keyboard closes, iOS can leave the visible screen shifted down from where the page
+ * thinks it is (visualViewport.offsetTop stays above zero). Everything pinned to the top or bottom
+ * then sits too high: the toolbar is off the top and the tab bar floats mid-screen. Publish the
+ * shift as --vv-top so the pinned bars (styles.css) move by the same amount and stay in place.
+ */
+function followVisibleScreen() {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  let frame = 0;
+  let last = -1;
+  const update = () => {
+    cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(() => {
+      const top = Math.max(0, Math.round(vv.offsetTop));
+      if (top === last) return;
+      last = top;
+      document.documentElement.style.setProperty('--vv-top', `${top}px`);
+    });
+  };
+  vv.addEventListener('scroll', update);
+  vv.addEventListener('resize', update);
+  window.addEventListener('scroll', update, { passive: true });
+  document.addEventListener('visibilitychange', update);
+  update();
+}
+
 export function fixStuckBars() {
   if (!isIOS) return;
+  followVisibleScreen();
   // Keyboard closed: focus left a text field and didn't move to another one.
   document.addEventListener('focusout', () => setTimeout(nudge, 120));
   // The visible area grew back (keyboard gone) or the app came back to the foreground.
