@@ -154,7 +154,7 @@ await step('progress shows the written summary', async () => {
 await step('settings shows the plan and matching versions; sign out returns to sign-in', async () => {
   await page.goto(`${B}/settings`);
   await page.getByRole('heading', { name: 'Your plan' }).waitFor();
-  await page.getByText(/coach up to date/).waitFor();
+  await page.getByText(/Gym Bestie \d{4}\.\d{2}\.\d{2} · coach up to date/).waitFor();
   await page.getByRole('button', { name: 'Sign out' }).click();
   await page.getByRole('button', { name: 'Sign in' }).waitFor();
 });

@@ -3,6 +3,7 @@ import { Link } from 'react-router';
 import { db, exportCsv, localDate, regenerateProgram, saveProfile, type Profile } from '../api';
 import { usePlan, useSession } from '../hooks';
 import { VERSION } from '../../supabase/functions/_shared/version.ts';
+import { APP_BUILD } from '../build';
 import { ProfileFields } from './Setup';
 
 function Toggle({ k, label }: { k: string; label: string }) {
@@ -150,7 +151,7 @@ export function SettingsPage() {
       </div>
 
       <p className="tiny muted center" style={{ margin: 0 }}>
-        Gym Bestie {VERSION}
+        Gym Bestie {APP_BUILD}
         {plan === undefined ? '' : plan === null ? ' · coach not reachable'
           : plan.coachVersion === VERSION ? ' · coach up to date'
           : ` · coach ${plan.coachVersion ?? 'is an older version'}: redeploy the coach function`}
